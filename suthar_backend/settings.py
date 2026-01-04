@@ -11,6 +11,8 @@ DEBUG = True
 ALLOWED_HOSTS = ['*']
 
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+CSRF_TRUSTED_ORIGINS = ['https://*.onrender.com']
+
 
 
 SIMPLE_JWT = {
