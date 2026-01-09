@@ -32,7 +32,9 @@ class UserProfile(models.Model):
     # ✅ SINGLE EDUCATION OBJECT (latest)
     @property
     def education(self):
-        return self.educations.order_by("-end_year", "-start_year").first()
+        # Safe access to the OneToOne education_detail
+        return getattr(self, "education_detail", None)
+
 
     def __str__(self):
         return f"{self.user.phone} - {self.registration_role}"
@@ -58,7 +60,11 @@ class PersonalDetail(models.Model):
     address = models.TextField(blank=True, null=True)
     native_place = models.CharField(max_length=100, blank=True, null=True)
     current_city = models.CharField(max_length=100, blank=True, null=True)
-    profile_image = models.TextField(null=True, blank=True)
+    profile_image = models.ImageField(
+        upload_to="profile/",
+        null=True,
+        blank=True
+    )
     community = models.IntegerField(
         choices=Community.choices,
         null=True,

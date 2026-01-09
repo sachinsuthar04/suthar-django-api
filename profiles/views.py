@@ -7,6 +7,8 @@ from django.contrib.auth import get_user_model
 from members.constants import Community
 from .models import UserProfile, PersonalDetail, EducationDetail, JobDetail
 from members.models import Member, MemberGender, MemberStatus, MemberRole
+from rest_framework.parsers import MultiPartParser
+from rest_framework.parsers import FormParser
 
 User = get_user_model()
 
@@ -39,12 +41,17 @@ class ProfileDetailView(APIView):
         education = getattr(profile, "education_detail", None)
         job = getattr(profile, "job", None)
 
+        # Build profile image full URL
+        profile_image_url = (
+            request.build_absolute_uri(personal.profile_image.url)
+            if personal and personal.profile_image else None
+        )
+
         return Response(
             {
                 "success": True,
                 "data": {
                     "selectedRole": profile.registration_role or "member",
-
                     "personal": {
                         "fullName": personal.full_name if personal else "",
                         "nickname": personal.nickname if personal else "",
@@ -56,11 +63,11 @@ class ProfileDetailView(APIView):
                         "address": personal.address if personal else "",
                         "nativePlace": personal.native_place if personal else "",
                         "currentCity": personal.current_city if personal else "",
-                        "profileImage": personal.profile_image if personal else "",
+                        "profileImage": personal.profile_image.url if personal and personal.profile_image else "",
+                        "profileImageUrl": profile_image_url,
                         "community": personal.community if personal and personal.community else None,
                         "status": personal.status if personal else MemberStatus.PENDING,
                     },
-
                     "education": {
                         "qualification": education.qualification if education else "",
                         "institution": education.institution if education else "",
@@ -69,7 +76,6 @@ class ProfileDetailView(APIView):
                         "endYear": None if education and education.currently_studying else (education.end_year if education else None),
                         "currentlyStudying": education.currently_studying if education else False,
                     },
-
                     "job": {
                         "occupationType": job.occupation_type if job else "",
                         "companyName": job.company_name if job else "",
@@ -82,6 +88,8 @@ class ProfileDetailView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
 
 # ==================================================
 # SAVE / UPDATE PROFILE (POST)
@@ -109,11 +117,10 @@ class SaveUserProfileAPI(APIView):
             "dob": "dob",
             "email": "email",
             "phone": "phone",
-            "country_code" :"country_code",
+            "country_code": "country_code",
             "address": "address",
             "nativePlace": "native_place",
             "currentCity": "current_city",
-            "profileImage": "profile_image",
             "community": "community",
             "status": "status",
         }
@@ -161,12 +168,13 @@ class SaveUserProfileAPI(APIView):
             personal.phone,
             profile.registration_role,
         ]
+
         profile.is_profile_completed = all(
             field not in (None, "", [])
             for field in mandatory_fields
         )
 
-        # 🔥 SAVE EACH MODEL ONLY ONCE
+        # ---------- SAVE ----------
         profile.save()
         personal.save()
         education.save()
@@ -185,14 +193,20 @@ class SaveUserProfileAPI(APIView):
                 "community": personal.community or Community.SUTHAR,
                 "name": personal.full_name,
                 "mobile": personal.phone,
-                "country_code":personal.country_code,
-                "gender": gender_map.get((personal.gender or "").lower(), MemberGender.OTHER),
+                "country_code": personal.country_code,
+                "gender": gender_map.get(
+                    (personal.gender or "").lower(),
+                    MemberGender.OTHER,
+                ),
                 "date_of_birth": personal.dob,
                 "email": personal.email,
                 "address": personal.address,
                 "city": personal.current_city,
                 "native_place": personal.native_place,
+
+                # ✅ SYNC IMAGE HERE (ONLY)
                 "profile_image": personal.profile_image,
+
                 "occupation": job.occupation_type,
                 "highest_qualification": education.qualification,
                 "profile_completed": profile.is_profile_completed,
@@ -212,4 +226,36 @@ class SaveUserProfileAPI(APIView):
                 "message": "Profile saved successfully",
             },
             status=status.HTTP_200_OK,
+        )
+
+
+
+class UploadProfileImageView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        file = request.FILES.get("file")
+
+        if not file:
+            return Response(
+                {"success": False, "message": "File not provided"},
+                status=400,
+            )
+
+        personal, _ = PersonalDetail.objects.get_or_create(
+            profile__user=request.user
+        )
+
+        personal.profile_image = file
+        personal.save()
+
+        return Response(
+            {
+                "success": True,
+                "profileImageUrl": request.build_absolute_uri(
+                    personal.profile_image.url
+                ),
+            },
+            status=200,
         )

@@ -1,39 +1,45 @@
 from django.db import models
 from users.models import User
 
-
-class NotificationType(models.TextChoices):
-    EVENT = "event", "Event Reminder"
-    APPROVAL = "approval", "Approval / Reject"
-    COMMUNITY = "community", "Community Update"
-    GENERAL = "general", "General Notification"
-
-
 class Notification(models.Model):
+    TYPE_CHOICES = (
+        ("event", "Event"),
+        ("notice", "Notice"),
+        ("advertise", "Advertise"),
+        ("approve", "Approve"),
+        ("reject", "Reject"),
+     
+    )
+
     user = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
-        related_name="notifications"
+        null=True,
+        blank=True
     )
 
-    title = models.CharField(max_length=200)
+    title = models.CharField(max_length=255)
     message = models.TextField()
-
-    type = models.CharField(
-        max_length=20,
-        choices=NotificationType.choices,
-        default=NotificationType.GENERAL,
-    )
-
+    type = models.CharField(max_length=20, choices=TYPE_CHOICES)
     is_read = models.BooleanField(default=False)
 
-    reference_id = models.CharField(max_length=50, null=True, blank=True)
+    reference_id = models.PositiveIntegerField(null=True, blank=True)
     reference_type = models.CharField(max_length=50, null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
 
-    class Meta:
-        ordering = ["-created_at"]
+    # ⭐ OPTIONAL – actual event/notice date
+    action_date = models.DateTimeField(null=True, blank=True)
+    
+    def save(self, *args, **kwargs):
+        PUBLIC_TYPES = ["event", "notice", "advertise"]
 
-    def __str__(self):
-        return f"{self.user.id} -> {self.title}"
+        if self.type in PUBLIC_TYPES:
+            self.user = None  # force global
+        else:
+            if self.user is None:
+                raise ValueError("User is required for approve/reject notifications")
+
+        super().save(*args, **kwargs)
+
+

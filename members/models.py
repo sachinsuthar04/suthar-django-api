@@ -18,14 +18,30 @@ class MemberRole(models.TextChoices):
     ADMIN = "admin", "Admin"
 
 class MemberRelation(models.TextChoices):
+    # Core Level
     SELF = "self", "Self"
     SPOUSE = "spouse", "Spouse"
-    SON = "son", "Son"
-    DAUGHTER = "daughter", "Daughter"
+    
+    # Parents
     FATHER = "father", "Father"
     MOTHER = "mother", "Mother"
+    
+    # Grandparents
+    GRANDFATHER = "grandfather", "Grandfather"
+    GRANDMOTHER = "grandmother", "Grandmother"
+    
+    # Siblings
     BROTHER = "brother", "Brother"
     SISTER = "sister", "Sister"
+    
+    # Children
+    SON = "son", "Son"
+    DAUGHTER = "daughter", "Daughter"
+    
+    # Extended (Optional but recommended for a complete tree)
+    UNCLE = "uncle", "Uncle"
+    BUA = "bua", "Bua"
+    
     OTHER = "other", "Other"
 
 class MemberGender(models.TextChoices):
@@ -82,6 +98,21 @@ class Member(models.Model):
         blank=True,
         related_name="members"
     )
+    spouse = models.OneToOneField(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="spouse_of"
+    )
+    parent = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="children",
+        help_text="Parent member (usually father or mother) for hierarchy"
+    )
 
     # ---- Identity ----
     country_code = models.CharField(max_length=5, default="+91")
@@ -113,19 +144,23 @@ class Member(models.Model):
         null=True,
         blank=True
     )
+
+    profile_image = models.ImageField(
+    upload_to="profile/member/",
+    null=True,
+    blank=True)
+
     date_of_birth = models.DateField(null=True, blank=True)
     email = models.EmailField(null=True, blank=True)
     address = models.TextField(null=True, blank=True)
     city = models.CharField(max_length=50, null=True, blank=True)
     gotra = models.CharField(max_length=100, null=True, blank=True)
-    profile_image = models.TextField(null=True, blank=True)
     native_place = models.CharField(max_length=100, null=True, blank=True)
 
     # ---- Additional Info ----
     blood_group = models.CharField(max_length=10, null=True, blank=True)
     occupation = models.CharField(max_length=100, null=True, blank=True)
     highest_qualification = models.CharField(max_length=100, null=True, blank=True)
-    spouse_id = models.CharField(max_length=100, null=True, blank=True)
 
     # ---- System ----
     created_at = models.DateTimeField(auto_now_add=True)

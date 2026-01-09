@@ -1,20 +1,41 @@
 from django.contrib import admin
 from django.db import transaction
+from django.utils.html import format_html
+
 from .models import Member, Family, MemberStatus
 
-# ----------------------------
-#   FAMILY ADMIN
-# ----------------------------
 
+# ============================================================
+# MEMBER INLINE (INSIDE FAMILY)
+# ============================================================
 class MemberInline(admin.TabularInline):
     model = Member
-    fields = ("name", "role", "mobile", "country_code", "status")  # added country_code
-    readonly_fields = ("name", "role", "mobile", "country_code", "status")  # added country_code
+    fields = (
+        "profile_preview",
+        "name",
+        "role",
+        "mobile",
+        "country_code",
+        "status",
+    )
+    readonly_fields = fields
     extra = 0
     can_delete = False
     show_change_link = True
 
+    def profile_preview(self, obj):
+        if obj.profile_image:
+            return format_html(
+                '<img src="{}" width="40" height="40" style="border-radius:50%;" />',
+                obj.profile_image.url,
+            )
+        return "-"
+    profile_preview.short_description = "Image"
 
+
+# ============================================================
+# FAMILY ADMIN
+# ============================================================
 @admin.register(Family)
 class FamilyAdmin(admin.ModelAdmin):
     list_display = (
@@ -24,10 +45,11 @@ class FamilyAdmin(admin.ModelAdmin):
         "member_count",
         "created_at",
     )
-    search_fields = ("head__username", "head__phone")
+    search_fields = ("head__username",)
     inlines = [MemberInline]
-
     readonly_fields = ("head",)
+
+    list_select_related = ("head",)
 
     def head_user(self, obj):
         return obj.head
@@ -36,8 +58,8 @@ class FamilyAdmin(admin.ModelAdmin):
     def head_member_name(self, obj):
         member = Member.objects.filter(
             user=obj.head,
-            role="familyHead"
-        ).first()
+            role="familyHead",
+        ).only("name").first()
         return member.name if member else "-"
     head_member_name.short_description = "Head Member"
 
@@ -46,26 +68,27 @@ class FamilyAdmin(admin.ModelAdmin):
     member_count.short_description = "Total Members"
 
 
-# ----------------------------
-#   MEMBER ADMIN
-# ----------------------------
-
+# ============================================================
+# MEMBER ADMIN
+# ============================================================
 @admin.register(Member)
 class MemberAdmin(admin.ModelAdmin):
-    # ----------------------------
-    # Display & Filters
-    # ----------------------------
+    # --------------------------------------------------
+    # LIST VIEW
+    # --------------------------------------------------
     list_display = (
         "id",
+        "profile_preview",
         "name",
         "mobile",
-        "country_code",          # added
+        "country_code",
         "community",
         "role",
         "status",
         "relation",
         "family_id_display",
         "family_head_name",
+        "spouse_name",
         "city",
         "profile_completed",
         "created_at",
@@ -79,7 +102,7 @@ class MemberAdmin(admin.ModelAdmin):
         "gender",
         "city",
         "profile_completed",
-        "country_code",          # added
+        "country_code",
     )
 
     search_fields = (
@@ -87,15 +110,27 @@ class MemberAdmin(admin.ModelAdmin):
         "mobile",
         "email",
         "city",
-        "country_code",          # added
+        "country_code",
     )
 
     ordering = ("-created_at",)
-    readonly_fields = ("created_at", "profile_completed")
+    readonly_fields = (
+        "created_at",
+        "profile_completed",
+        "spouse_id",
+        "profile_preview",
+    )
 
-    # ----------------------------
-    # Fieldsets
-    # ----------------------------
+    list_select_related = (
+        "family",
+        "family__head",
+        "spouse",
+        "user",
+    )
+
+    # --------------------------------------------------
+    # FIELDSETS
+    # --------------------------------------------------
     fieldsets = (
         ("Basic Information", {
             "fields": (
@@ -103,7 +138,7 @@ class MemberAdmin(admin.ModelAdmin):
                 "family",
                 "community",
                 "mobile",
-                "country_code",      # added
+                "country_code",
                 "name",
                 "role",
                 "status",
@@ -112,6 +147,8 @@ class MemberAdmin(admin.ModelAdmin):
         }),
         ("Profile Details", {
             "fields": (
+                "profile_preview",
+                "profile_image",
                 "gender",
                 "date_of_birth",
                 "email",
@@ -119,7 +156,6 @@ class MemberAdmin(admin.ModelAdmin):
                 "city",
                 "gotra",
                 "native_place",
-                "profile_image",
             )
         }),
         ("Additional Details", {
@@ -138,40 +174,55 @@ class MemberAdmin(admin.ModelAdmin):
         }),
     )
 
-    # ----------------------------
-    # Custom Methods
-    # ----------------------------
+    # --------------------------------------------------
+    # CUSTOM DISPLAY METHODS
+    # --------------------------------------------------
+    def profile_preview(self, obj):
+        if obj.profile_image:
+            return format_html(
+                '<img src="{}" width="60" height="60" style="border-radius:50%;" />',
+                obj.profile_image.url,
+            )
+        return "-"
+    profile_preview.short_description = "Profile Image"
+
     def family_id_display(self, obj):
-        return obj.family.id if obj.family else "-"
+        return obj.family_display_id
     family_id_display.short_description = "Family ID"
 
     def family_head_name(self, obj):
         if obj.family and obj.family.head:
-            user = obj.family.head
-            if hasattr(user, "profile") and hasattr(user.profile, "full_name"):
-                return user.profile.full_name
-            return getattr(user, "username", getattr(user, "phone", str(user.id)))
+            head_member = Member.objects.filter(
+                user=obj.family.head,
+                role="familyHead",
+            ).only("name").first()
+            return head_member.name if head_member else "-"
         return "-"
     family_head_name.short_description = "Family Head"
 
-    # ----------------------------
-    # Admin Actions
-    # ----------------------------
-    actions = ["approve_members", "make_family_head"]
+    def spouse_name(self, obj):
+        return obj.spouse.name if obj.spouse else "-"
+    spouse_name.short_description = "Spouse"
+
+    # --------------------------------------------------
+    # ADMIN ACTIONS
+    # --------------------------------------------------
+    actions = ("approve_members", "make_family_head")
 
     @admin.action(description="Mark selected members as Approved / Active")
     def approve_members(self, request, queryset):
-        for member in queryset:
-            member.status = MemberStatus.ACTIVE
-            member.save(update_fields=["status"])
-            self.message_user(request, "Selected members have been activated.")
+        updated = queryset.update(status=MemberStatus.ACTIVE)
+        self.message_user(
+            request,
+            f"{updated} member(s) marked as ACTIVE.",
+        )
 
     @admin.action(description="Make selected member as Family Head")
     def make_family_head(self, request, queryset):
         if queryset.count() != 1:
             self.message_user(
                 request,
-                "Please select exactly ONE member to make Family Head.",
+                "Select exactly ONE member.",
                 level="error",
             )
             return
@@ -181,13 +232,15 @@ class MemberAdmin(admin.ModelAdmin):
         if not member.family:
             self.message_user(
                 request,
-                "Selected member does not belong to a family.",
+                "Member does not belong to a family.",
                 level="error",
             )
             return
 
         try:
-            member.make_family_head()
+            with transaction.atomic():
+                member.make_family_head()
+
             self.message_user(
                 request,
                 f"{member.name} is now the Family Head.",

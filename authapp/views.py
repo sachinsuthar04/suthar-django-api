@@ -59,14 +59,24 @@ class SendOTPView(APIView):
             status=status.HTTP_200_OK,
         )
 
+
+from rest_framework.permissions import AllowAny
+
+
 class VerifyOTPView(APIView):
     """
     Verify OTP and save profile data.
+
     Priority:
     1. Flutter data
     2. Member data
     3. Existing profile data
+
+    ⚠️ Profile image is NOT handled here.
+    Image upload is ONLY via UploadProfileImageView.
     """
+
+    permission_classes = [AllowAny]
 
     @transaction.atomic
     def post(self, request):
@@ -77,9 +87,9 @@ class VerifyOTPView(APIView):
         profile_data_from_app = request.data.get("data")
 
         # ---------- BASIC VALIDATION ----------
-        if not phone or not otp:
+        if not phone or not otp or not country_code:
             return Response(
-                {"success": False, "message": "Phone and OTP required"},
+                {"success": False, "message": "Phone, country code and OTP required"},
                 status=400,
             )
 
@@ -88,10 +98,11 @@ class VerifyOTPView(APIView):
         otp = str(otp).strip()
 
         # ---------- OTP VALIDATION ----------
-        otp_obj = OTP.objects.filter(
-            phone=phone,
-            country_code=country_code,
-        ).order_by("-created_at").first()
+        otp_obj = (
+            OTP.objects.filter(phone=phone, country_code=country_code)
+            .order_by("-created_at")
+            .first()
+        )
 
         if not (otp == "123456" or (otp_obj and str(otp_obj.code) == otp)):
             return Response(
@@ -99,17 +110,17 @@ class VerifyOTPView(APIView):
                 status=400,
             )
 
-      # ---------- USER ----------
+        # ---------- USER ----------
         user, created = User.objects.get_or_create(
             phone=phone,
             country_code=country_code,
         )
 
-        # Backward compatibility (old users created before country_code)
+        # Backward compatibility
         if not user.country_code:
             user.country_code = country_code
             user.save(update_fields=["country_code"])
-    
+
         if fcm_token:
             user.fcm_token = fcm_token
             user.save(update_fields=["fcm_token"])
@@ -120,7 +131,6 @@ class VerifyOTPView(APIView):
         education, _ = EducationDetail.objects.get_or_create(profile=profile)
         job, _ = JobDetail.objects.get_or_create(profile=profile)
 
-        # Ensure country code stored in profile
         if not personal.country_code:
             personal.country_code = country_code
             personal.save(update_fields=["country_code"])
@@ -131,7 +141,7 @@ class VerifyOTPView(APIView):
             country_code=country_code,
         ).first()
 
-        # 🚨 BLOCK if member already linked to another user
+        # 🚨 Block if already linked to another user
         if member and member.user and member.user != user:
             return Response(
                 {
@@ -141,40 +151,33 @@ class VerifyOTPView(APIView):
                 status=400,
             )
 
-        # ---------- AUTO REGISTER MEMBER ----------
+        # ---------- AUTO LINK MEMBER ----------
         if member and not member.user:
             member.user = user
             member.save(update_fields=["user"])
 
-        # ---------- SYNC MEMBER → PROFILE ----------
+        # ---------- MEMBER → PROFILE SYNC (NO IMAGE) ----------
         if member:
             if member.name:
                 personal.full_name = member.name
-
             if member.mobile:
                 personal.phone = member.mobile
-
             if member.country_code:
                 personal.country_code = member.country_code
-
             if member.native_place:
                 personal.native_place = member.native_place
-
             if member.city:
                 personal.current_city = member.city
-
             if member.gender:
                 personal.gender = member.gender
-
             if member.date_of_birth:
                 personal.dob = member.date_of_birth
-
             if member.community:
                 personal.community = member.community
-
             if member.status:
                 personal.status = member.status
 
+            # 🚫 DO NOT TOUCH profile_image
             personal.save()
 
             if member.highest_qualification:
@@ -189,7 +192,7 @@ class VerifyOTPView(APIView):
                 profile.registration_role = member.role
                 profile.save(update_fields=["registration_role"])
 
-        # ---------- FLUTTER DATA OVERRIDE ----------
+        # ---------- FLUTTER DATA OVERRIDE (NO IMAGE) ----------
         if profile_data_from_app:
             serializer = FullUserDetailsSerializer(data=profile_data_from_app)
             serializer.is_valid(raise_exception=True)
@@ -216,8 +219,8 @@ class VerifyOTPView(APIView):
                 "address": "address",
                 "nativePlace": "native_place",
                 "currentCity": "current_city",
-                "profileImage": "profile_image",
                 "community": "community",
+                # ❌ profileImage REMOVED
             }
 
             for key, attr in personal_map.items():

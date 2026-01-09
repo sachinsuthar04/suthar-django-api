@@ -1,5 +1,7 @@
 # members/views.py
 
+from django.utils import timezone
+
 from django.db import IntegrityError, transaction
 from django.shortcuts import get_object_or_404
 
@@ -11,9 +13,8 @@ from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 
-from members.signals import  sync_member_to_profile_helper
-
-
+from members.signals import sync_member_to_profile_helper
+from notifications.models import Notification
 from .models import Member, Family, MemberRole, MemberStatus, Community
 from .serializers import (
     MemberSerializer,
@@ -52,10 +53,21 @@ class FamilyHeadAddMember(APIView):
             head_member.save(update_fields=["family"])
 
         # 3️⃣ Validate payload
-        serializer = MemberCreateSerializer(data=request.data)
+        serializer = MemberCreateSerializer(
+        data=request.data,
+        context={
+            "request": request,
+            "family": family,
+        }
+    )
         serializer.is_valid(raise_exception=True)
 
-        # 4️⃣ Check mobile uniqueness across other families
+        # 4️⃣ Prevent self-selection as spouse
+        spouse_id = serializer.validated_data.get("spouse_id")
+        if spouse_id == head_member.id:
+            return Response({"success": False, "message": "Cannot select yourself as spouse"}, status=400)
+
+        # 5️⃣ Check mobile uniqueness across other families
         mobile = serializer.validated_data.get("mobile")
         if mobile:
             duplicate = Member.objects.filter(mobile=mobile).exclude(family=family).exists()
@@ -65,11 +77,11 @@ class FamilyHeadAddMember(APIView):
                     status=status.HTTP_409_CONFLICT
                 )
 
-        # 5️⃣ Optionally handle empty mobile (use Family Head's number)
+        # 6️⃣ Optionally handle empty mobile (use Family Head's number)
         if not mobile:
             serializer.validated_data["mobile"] = head_member.mobile
 
-        # 6️⃣ Prevent duplicate mobile inside the same family
+        # 7️⃣ Prevent duplicate mobile inside the same family
         existing_member_same_family = Member.objects.filter(
             family=family,
             mobile=serializer.validated_data.get("mobile")
@@ -80,7 +92,7 @@ class FamilyHeadAddMember(APIView):
                 status=status.HTTP_409_CONFLICT
             )
 
-        # 7️⃣ Create member
+        # 8️⃣ Create member (serializer handles spouse linking)
         try:
             member = serializer.save(
                 family=family,
@@ -94,9 +106,17 @@ class FamilyHeadAddMember(APIView):
             )
 
         return Response(
-            {"success": True, "member": MemberSerializer(member).data},
-            status=status.HTTP_201_CREATED,
-        )
+    {
+        "success": True,
+        "member": MemberSerializer(
+            member,
+            context={"request": request}
+        ).data,
+    },
+    status=status.HTTP_201_CREATED,
+)
+
+
 
 # ============================================================
 # FAMILY HEAD → UPDATE MEMBER
@@ -127,7 +147,12 @@ class FamilyHeadUpdateMember(APIView):
         # 3️⃣ Fetch member from same family
         member = get_object_or_404(Member, id=member_id, family=family)
 
-        # 4️⃣ Prevent changing mobile to one used by another family member
+        # 4️⃣ Prevent self as spouse
+        spouse_id = request.data.get("spouse_id")
+        if spouse_id and spouse_id == member.id:
+            return Response({"success": False, "message": "Cannot select yourself as spouse"}, status=400)
+
+        # 5️⃣ Prevent changing mobile to one used by another family member
         new_mobile = request.data.get("mobile")
         if new_mobile and Member.objects.filter(mobile=new_mobile).exclude(id=member.id).exists():
             return Response(
@@ -135,7 +160,7 @@ class FamilyHeadUpdateMember(APIView):
                 status=status.HTTP_409_CONFLICT
             )
 
-        # 5️⃣ Update member
+        # 6️⃣ Update member (serializer handles spouse linking)
         serializer = MemberProfileUpdateSerializer(member, data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
@@ -158,31 +183,30 @@ class MyFamilyMembers(APIView):
         if not member or not member.family:
             return Response({"success": True, "familyMembers": []})
 
-        members = Member.objects.filter(
-            family=member.family
-        ).select_related("user")
+        members = Member.objects.filter(family=member.family).select_related("user")
 
         return Response(
-            {
-                "success": True,
-                "familyMembers": MemberSerializer(members, many=True).data,
-            }
-        )
+        {
+            "success": True,
+            "familyMembers": MemberSerializer(
+                members,
+                many=True,
+                context={"request": request}  # ✅ REQUIRED
+            ).data,
+        }
+)
+
 
 
 # ============================================================
 # ADMIN → LIST MEMBERS
 # ============================================================
 class MemberListView(generics.ListAPIView):
-
     permission_classes = [IsAuthenticated]
-
     serializer_class = MemberSerializer
 
     def get_queryset(self):
-        return Member.objects.select_related(
-            "user", "family"
-        ).filter(user__isnull=False)
+        return Member.objects.select_related("user", "family").filter(user__isnull=False)
 
     def list(self, request, *args, **kwargs):
         qs = self.get_queryset()
@@ -208,10 +232,7 @@ class ApproveMemberView(APIView):
             properties={
                 "status": openapi.Schema(
                     type=openapi.TYPE_STRING,
-                    enum=[
-                        MemberStatus.ACTIVE,
-                        MemberStatus.REJECTED,
-                    ],
+                    enum=[MemberStatus.ACTIVE, MemberStatus.REJECTED],
                 )
             },
         ),
@@ -220,27 +241,30 @@ class ApproveMemberView(APIView):
         member = get_object_or_404(Member, id=pk)
         status_value = request.data.get("status")
 
-        if status_value not in [
-            MemberStatus.ACTIVE,
-            MemberStatus.REJECTED,
-        ]:
-            return Response(
-                {"success": False, "message": "Invalid status"},
-                status=400,
-            )
+        if status_value not in [MemberStatus.ACTIVE, MemberStatus.REJECTED]:
+            return Response({"success": False, "message": "Invalid status"}, status=400)
 
         member.status = status_value
         member.save(update_fields=["status"])
 
         sync_member_to_profile_helper(member)
+            
+        Notification.objects.create(
+        user=member.user,          # 🔥 RECEIVER (approved user)
+        title="Membership Update",
+        message=(
+            "Your membership has been approved."
+            if status_value == MemberStatus.ACTIVE
+            else "Your membership has been rejected."
+        ),
+        type="approve" if status_value == MemberStatus.ACTIVE else "reject",
+        reference_id=member.id,
+        reference_type="member",
+        action_date=timezone.now(), )
 
-        
 
         return Response(
-            {
-                "success": True,
-                "message": f"Member {status_value} successfully",
-            },
+            {"success": True, "message": f"Member {status_value} successfully"},
             status=200,
         )
 

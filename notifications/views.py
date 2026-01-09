@@ -11,16 +11,31 @@ from .serializers import NotificationSerializer
 # -----------------------------
 # 1. Get All Notifications (for logged in user)
 # -----------------------------
+from django.db.models import Q
+
 class NotificationListAPI(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        notifications = Notification.objects.filter(user=request.user)
-        serializer = NotificationSerializer(notifications, many=True)
+        notif_type = request.query_params.get("type")
+
+        qs = Notification.objects.filter(
+            Q(user=request.user) | Q(user__isnull=True)
+        )
+
+        if notif_type:
+            qs = qs.filter(type=notif_type)
+
+        serializer = NotificationSerializer(qs, many=True)
+
         return Response({
             "success": True,
             "notifications": serializer.data
-        }, status=status.HTTP_200_OK)
+        })
+
+
+
+
 
 
 # -----------------------------
@@ -30,17 +45,24 @@ class NotificationDetailAPI(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
-        notification = get_object_or_404(
-            Notification,
+        notification = Notification.objects.filter(
             id=pk,
-            user=request.user  # ✅ user can access only own notification
-        )
+            user=request.user
+        ).first()
+
+        if not notification:
+            return Response({
+                "success": True,
+                "notifications": []
+            })
+
         serializer = NotificationSerializer(notification)
 
         return Response({
             "success": True,
-            "notification": serializer.data
-        }, status=status.HTTP_200_OK)
+            "notifications": [serializer.data]  # 👈 FORCE LIST
+        })
+
 
 
 # -----------------------------

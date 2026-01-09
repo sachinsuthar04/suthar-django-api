@@ -3,31 +3,50 @@ from members.constants import Community
 from members.models import MemberStatus
 from .models import UserProfile, PersonalDetail, EducationDetail, JobDetail
 
-
 # ==================================================
 # PERSONAL DETAILS
 # ==================================================
-from rest_framework import serializers
-from members.constants import Community
-from .models import UserProfile, PersonalDetail, EducationDetail, JobDetail
-
-
 class PersonalDetailsSerializer(serializers.ModelSerializer):
     fullName = serializers.CharField(source="full_name", required=False, allow_blank=True)
     nativePlace = serializers.CharField(source="native_place", required=False, allow_blank=True)
     currentCity = serializers.CharField(source="current_city", required=False, allow_blank=True, allow_null=True)
-    profileImage = serializers.CharField(source="profile_image", required=False, allow_blank=True, allow_null=True)
+
+    # SerializerMethodField to return image URL for frontend
+    profileImageUrl = serializers.SerializerMethodField()
+
+    # ImageField for uploading profile image
+    profileImage = serializers.ImageField(
+        source="profile_image",
+        required=False,
+        allow_null=True
+    )
+
     community = serializers.ChoiceField(choices=Community.choices, required=False, allow_null=True)
-    # 🔒 READ-ONLY STATUS (ADMIN CONTROLLED)
+
+    # 🔒 Read-only, controlled by admin
     status = serializers.CharField(read_only=True)
     
     class Meta:
         model = PersonalDetail
         fields = [
-            "fullName", "nickname", "gender", "dob", "email", "phone","country_code",
-            "address", "nativePlace", "currentCity", "profileImage", "community","status",
+            "fullName", "nickname", "gender", "dob", "email", "phone", "country_code",
+            "address", "nativePlace", "currentCity", "profileImage", "profileImageUrl",
+            "community", "status",
         ]
 
+    # 🔹 Generate absolute URL for frontend
+    def get_profileImageUrl(self, obj):
+        request = self.context.get("request")
+        if obj.profile_image:
+            if request:
+                return request.build_absolute_uri(obj.profile_image.url)
+            return obj.profile_image.url
+        return None
+
+
+# ==================================================
+# EDUCATION DETAILS
+# ==================================================
 class EducationDetailsSerializer(serializers.ModelSerializer):
     startYear = serializers.IntegerField(source="start_year", required=False, allow_null=True)
     endYear = serializers.IntegerField(source="end_year", required=False, allow_null=True)
@@ -45,18 +64,20 @@ class EducationDetailsSerializer(serializers.ModelSerializer):
         ]
 
     def to_representation(self, instance):
-            """Return endYear as None if currentlyStudying is True"""
-            data = super().to_representation(instance)
-            if data.get("currentlyStudying") is True:
-                data["endYear"] = None
-            return data
+        """Return endYear as None if currentlyStudying is True"""
+        data = super().to_representation(instance)
+        if data.get("currentlyStudying") is True:
+            data["endYear"] = None
+        return data
 
 
-
+# ==================================================
+# JOB DETAILS
+# ==================================================
 class JobDetailsSerializer(serializers.ModelSerializer):
     occupationType = serializers.CharField(source="occupation_type", required=False, allow_blank=True, allow_null=True)
     companyName = serializers.CharField(source="company_name", required=False, allow_blank=True, allow_null=True)
-    startDate = serializers.DateField(source="start_date", required=False, allow_null=True)
+    startDate = serializers.DateField(source="start_date", required=False, allow_null=True, format="%Y-%m-%d")
     incomeRange = serializers.CharField(source="income_range", required=False, allow_blank=True, allow_null=True)
 
     class Meta:
@@ -64,6 +85,9 @@ class JobDetailsSerializer(serializers.ModelSerializer):
         fields = ["occupationType", "companyName", "role", "industry", "startDate", "incomeRange"]
 
 
+# ==================================================
+# FULL USER PROFILE
+# ==================================================
 class FullUserDetailsSerializer(serializers.Serializer):
     selectedRole = serializers.ChoiceField(
         choices=UserProfile.REGISTRATION_ROLE_CHOICES, required=False

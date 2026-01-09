@@ -1,19 +1,34 @@
-from typing import Dict
+from typing import Dict, Optional
+from django.http import HttpRequest
 from profiles.models import UserProfile
 
 
-def build_profile_response(profile: UserProfile) -> Dict:
+def build_profile_response(
+    profile: UserProfile,
+    request: Optional[HttpRequest] = None
+) -> Dict:
     """
     Constructs a full profile JSON response from a UserProfile instance.
+
     SAFE:
     - Does not fabricate empty values
     - Handles missing related objects cleanly
+    - Builds proper image URL for frontend (Flutter)
     """
 
     # --------------------------------------------------
     # PERSONAL
     # --------------------------------------------------
     personal = getattr(profile, "personal", None)
+
+    profile_image_url = None
+    if personal and personal.profile_image:
+        if request:
+            profile_image_url = request.build_absolute_uri(
+                personal.profile_image.url
+            )
+        else:
+            profile_image_url = personal.profile_image.url
 
     personal_data = {
         "fullName": personal.full_name if personal and personal.full_name else None,
@@ -26,14 +41,16 @@ def build_profile_response(profile: UserProfile) -> Dict:
         "address": personal.address if personal and personal.address else None,
         "nativePlace": personal.native_place if personal and personal.native_place else None,
         "currentCity": personal.current_city if personal and personal.current_city else None,
-        "profileImage": personal.profile_image if personal and personal.profile_image else None,
+
+        # ✅ CORRECT IMAGE FIELD
+        "profileImageUrl": profile_image_url,
+
         "community": personal.community if personal and personal.community else None,
-         # 🔥 ADD STATUS HERE
         "status": personal.status if personal and personal.status else None,
     }
 
     # --------------------------------------------------
-    # EDUCATION  ✅ FIXED (OneToOne safe access)
+    # EDUCATION (OneToOne safe access)
     # --------------------------------------------------
     try:
         edu = profile.education
