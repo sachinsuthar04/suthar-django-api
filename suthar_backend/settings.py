@@ -141,6 +141,7 @@ INSTALLED_APPS = [
     'notifications',
     'dashboard',
     'drf_yasg',
+    'cloudinary', 'cloudinary_storage'
 ]
 
 REST_FRAMEWORK = {
@@ -188,13 +189,18 @@ DATABASES = {
     }
 }
 
-DEFAULT_FILE_STORAGE = "django.core.files.storage.FileSystemStorage"
-
+# DEFAULT_FILE_STORAGE = "django.core.files.storage.FileSystemStorage"
+DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
 
 AUTHENTICATION_BACKENDS = [
     'users.auth_backend.PhoneBackend',  # member login via phone
     'django.contrib.auth.backends.ModelBackend',  # admin login via email
 ]
+CLOUDINARY_STORAGE = {
+  'CLOUD_NAME': 'dwdvqvwsh',
+  'API_KEY': '828578842676895',
+  'API_SECRET': 'ecdVhBCjQ17dBJ6fD_hUpbKiuFM',
+}
 
 AUTH_PASSWORD_VALIDATORS = []
 
