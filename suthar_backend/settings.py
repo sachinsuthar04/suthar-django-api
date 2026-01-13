@@ -7,16 +7,16 @@ AUTH_USER_MODEL = 'users.User'
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 # for deployment settings, uncomment below and comment the following settings
-SECRET_KEY = 'your-secret-key'
-DEBUG = True
-ALLOWED_HOSTS = ['*']
+# SECRET_KEY = 'your-secret-key'
+# DEBUG = True
+# ALLOWED_HOSTS = ['*']
 
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 CSRF_TRUSTED_ORIGINS = ['https://*.onrender.com']
 
-# SECRET_KEY = 'your-secret-key'
-# DEBUG = True
-# ALLOWED_HOSTS = ['*']
+SECRET_KEY = 'your-secret-key'
+DEBUG = True
+ALLOWED_HOSTS = ['*']
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(hours=12),  # example: 12-hour access token
@@ -192,15 +192,16 @@ DATABASES = {
 # DEFAULT_FILE_STORAGE = "django.core.files.storage.FileSystemStorage"
 DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
 
-AUTHENTICATION_BACKENDS = [
-    'users.auth_backend.PhoneBackend',  # member login via phone
-    'django.contrib.auth.backends.ModelBackend',  # admin login via email
-]
 CLOUDINARY_STORAGE = {
   'CLOUD_NAME': 'dwdvqvwsh',
   'API_KEY': '828578842676895',
   'API_SECRET': 'ecdVhBCjQ17dBJ6fD_hUpbKiuFM',
 }
+
+AUTHENTICATION_BACKENDS = [
+    'users.auth_backend.PhoneBackend',  # member login via phone
+    'django.contrib.auth.backends.ModelBackend',  # admin login via email
+]
 
 AUTH_PASSWORD_VALIDATORS = []
 
@@ -218,5 +219,5 @@ REST_FRAMEWORK = {
     ),
 }
 
-# MEDIA_URL = "/media/"
-# MEDIA_ROOT = os.path.join(BASE_DIR, "media")
+MEDIA_URL = "/media/"
+MEDIA_ROOT = os.path.join(BASE_DIR, "media")
