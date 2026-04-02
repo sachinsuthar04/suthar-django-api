@@ -189,14 +189,16 @@ DATABASES = {
     }
 }
 
-# DEFAULT_FILE_STORAGE = "django.core.files.storage.FileSystemStorage"
-DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
+#uncomment when want dynamic
+DEFAULT_FILE_STORAGE = "django.core.files.storage.FileSystemStorage"
+# DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
 
-CLOUDINARY_STORAGE = {
-  'CLOUD_NAME': 'dwdvqvwsh',
-  'API_KEY': '828578842676895',
-  'API_SECRET': 'ecdVhBCjQ17dBJ6fD_hUpbKiuFM',
-}
+#uncomment when want dynamic
+# CLOUDINARY_STORAGE = {
+#   'CLOUD_NAME': 'dwdvqvwsh',
+#   'API_KEY': '828578842676895',
+#   'API_SECRET': 'ecdVhBCjQ17dBJ6fD_hUpbKiuFM',
+# }
 
 AUTHENTICATION_BACKENDS = [
     'users.auth_backend.PhoneBackend',  # member login via phone
