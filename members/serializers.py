@@ -265,6 +265,8 @@ class MemberCreateSerializer(serializers.ModelSerializer):
         spouse_id = validated_data.pop("spouse_id", None)
         father_id = validated_data.pop("father_id", None)
         mother_id = validated_data.pop("mother_id", None)
+        parent_id = self.initial_data.get("parent_id", None)
+        relation = (validated_data.get("relation") or "").lower()
 
         with transaction.atomic():
             member = super().create(validated_data)
@@ -286,6 +288,37 @@ class MemberCreateSerializer(serializers.ModelSerializer):
                     member.save(update_fields=["mother"])
                 except Member.DoesNotExist:
                     raise serializers.ValidationError({"mother_id": "Invalid mother id"})
+
+            # Handle legacy parent_id from Flutter
+            if parent_id:
+                try:
+                    parent_member = Member.objects.get(id=parent_id)
+                    if parent_member.gender == 'female':
+                        member.mother = parent_member
+                        member.save(update_fields=["mother"])
+                    else:
+                        member.father = parent_member
+                        member.save(update_fields=["father"])
+                except Member.DoesNotExist:
+                    pass
+
+            # Handle backward linking based on relation
+            request = self.context.get("request")
+            if request and hasattr(request, "user") and request.user.is_authenticated:
+                creator = Member.objects.filter(user=request.user).first()
+                if creator:
+                    if relation == "father":
+                        if check_circular_dependency(creator.id, member.id):
+                            raise serializers.ValidationError({"father_id": "Circular dependency"})
+                        creator.father = member
+                        creator.save(update_fields=["father"])
+                    elif relation == "mother":
+                        if check_circular_dependency(creator.id, member.id):
+                            raise serializers.ValidationError({"mother_id": "Circular dependency"})
+                        creator.mother = member
+                        creator.save(update_fields=["mother"])
+                    elif relation == "spouse":
+                        handle_spouse_link(creator, member.id)
 
             # Link spouse if provided
             handle_spouse_link(member, spouse_id)
