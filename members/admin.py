@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.db import transaction
 from django.utils.html import format_html
 
-from .models import Member, Family, MemberStatus
+from .models import Member, Family, MemberStatus, RelationshipRequest
 
 
 # ============================================================
@@ -164,6 +164,8 @@ class MemberAdmin(admin.ModelAdmin):
                 "occupation",
                 "highest_qualification",
                 "spouse_id",
+                "father",
+                "mother",
             )
         }),
         ("System Fields", {
@@ -248,3 +250,13 @@ class MemberAdmin(admin.ModelAdmin):
             )
         except Exception as e:
             self.message_user(request, str(e), level="error")
+
+# ============================================================
+# RELATIONSHIP REQUEST ADMIN
+# ============================================================
+@admin.register(RelationshipRequest)
+class RelationshipRequestAdmin(admin.ModelAdmin):
+    list_display = ("id", "sender", "receiver", "proposed_relation", "status", "created_at")
+    list_filter = ("status", "proposed_relation")
+    search_fields = ("sender__name", "receiver__name")
+    readonly_fields = ("created_at", "updated_at")

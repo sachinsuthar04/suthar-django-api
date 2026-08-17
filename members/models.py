@@ -105,13 +105,21 @@ class Member(models.Model):
         on_delete=models.SET_NULL,
         related_name="spouse_of"
     )
-    parent = models.ForeignKey(
+    father = models.ForeignKey(
         "self",
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
-        related_name="children",
-        help_text="Parent member (usually father or mother) for hierarchy"
+        related_name="children_as_father",
+        help_text="Father of the member"
+    )
+    mother = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="children_as_mother",
+        help_text="Mother of the member"
     )
 
     # ---- Identity ----
@@ -217,3 +225,31 @@ class Member(models.Model):
             # Update Family table
             family.head = self.user
             family.save(update_fields=["head"])
+
+# -------------------------------------------------
+# RELATIONSHIP REQUEST
+# -------------------------------------------------
+class RelationshipRequestStatus(models.TextChoices):
+    PENDING = "pending", "Pending"
+    ACCEPTED = "accepted", "Accepted"
+    REJECTED = "rejected", "Rejected"
+
+class RelationshipRequest(models.Model):
+    sender = models.ForeignKey(Member, on_delete=models.CASCADE, related_name="sent_relationship_requests")
+    receiver = models.ForeignKey(Member, on_delete=models.CASCADE, related_name="received_relationship_requests")
+    proposed_relation = models.CharField(max_length=20, choices=MemberRelation.choices)
+    status = models.CharField(max_length=20, choices=RelationshipRequestStatus.choices, default=RelationshipRequestStatus.PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sender", "receiver", "status"],
+                condition=models.Q(status="pending"),
+                name="unique_pending_request_between_members",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.sender.name} -> {self.receiver.name} ({self.proposed_relation}) [{self.status}]"

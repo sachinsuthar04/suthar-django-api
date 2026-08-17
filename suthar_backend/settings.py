@@ -27,15 +27,15 @@ SIMPLE_JWT = {
 }
 
 JAZZMIN_SETTINGS = {
-    "site_title": "your_site_name",
-    "site_header": "your_site_header",
-    "site_brand": "your_site_brand",
+    "site_title": "Mewada Kutumb",
+    "site_header": "Mewada Kutumb",
+    "site_brand": "Mewada Kutumb",
     "site_icon": "static/images/app_icon_mistry.png",
     # Add your own branding here
     "site_logo": None,
-    "welcome_sign": "Welcome to the your_site_name",
+    "welcome_sign": "Welcome to Mewada Kutumb",
     # Copyright on the footer
-    "copyright": "your_site_name",
+    "copyright": "Mewada Kutumb",
     "user_avatar": None,
     ############
     # Top Menu #
@@ -43,7 +43,7 @@ JAZZMIN_SETTINGS = {
     # Links to put along the top menu
     "topmenu_links": [
         # Url that gets reversed (Permissions can be added)
-        {"name": "your_site_name", "url": "home", "permissions": ["auth.view_user"]},
+        {"name": "Dashboard", "url": "admin:index", "permissions": ["auth.view_user"]},
         # model admin to link to (Permissions checked against model)
         {"model": "auth.User"},
     ],
@@ -96,22 +96,22 @@ JAZZMIN_UI_TWEAKS = {
     "footer_small_text": False,
     "body_small_text": False,
     "brand_small_text": False,
-    "brand_colour": "navbar-success",
-    "accent": "accent-teal",
-    "navbar": "navbar-dark",
+    "brand_colour": "navbar-primary",
+    "accent": "accent-primary",
+    "navbar": "navbar-white navbar-light",
     "no_navbar_border": False,
     "navbar_fixed": False,
     "layout_boxed": False,
     "footer_fixed": False,
     "sidebar_fixed": False,
-    "sidebar": "sidebar-dark-info",
+    "sidebar": "sidebar-dark-primary",
     "sidebar_nav_small_text": False,
     "sidebar_disable_expand": False,
     "sidebar_nav_child_indent": False,
     "sidebar_nav_compact_style": False,
     "sidebar_nav_legacy_style": False,
     "sidebar_nav_flat_style": False,
-    "theme": "cyborg",
+    "theme": "default",
     "dark_mode_theme": None,
     "button_classes": {
         "primary": "btn-primary",

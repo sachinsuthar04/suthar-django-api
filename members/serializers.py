@@ -3,6 +3,36 @@ from django.db import transaction
 
 from profiles.models import PersonalDetail
 from .models import Member, MemberRole
+from collections import deque
+
+def check_circular_dependency(member_id, new_parent_id):
+    if not member_id or not new_parent_id:
+        return False
+    if member_id == new_parent_id:
+        return True
+        
+    queue = deque([new_parent_id])
+    visited = set()
+    
+    while queue:
+        current = queue.popleft()
+        if current in visited:
+            continue
+        visited.add(current)
+        
+        if current == member_id:
+            return True
+            
+        try:
+            m = Member.objects.get(id=current)
+            if m.father_id:
+                queue.append(m.father_id)
+            if m.mother_id:
+                queue.append(m.mother_id)
+        except Member.DoesNotExist:
+            continue
+            
+    return False
 
 
 # =====================================================
@@ -80,7 +110,8 @@ class MemberSerializer(serializers.ModelSerializer):
     # SAME KEY IN REQUEST & RESPONSE
     # -----------------------------
     spouse_id = serializers.SerializerMethodField()
-    parent_id = serializers.SerializerMethodField()
+    father_id = serializers.SerializerMethodField()
+    mother_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Member
@@ -117,15 +148,19 @@ class MemberSerializer(serializers.ModelSerializer):
     def get_spouse_id(self, obj):
         return obj.spouse.id if obj.spouse else None
 
-    def get_parent_id(self, obj):
-        return obj.parent.id if obj.parent else None
+    def get_father_id(self, obj):
+        return obj.father.id if obj.father else None
+
+    def get_mother_id(self, obj):
+        return obj.mother.id if obj.mother else None
 
     # -------------------------------------------------
     # UPDATE LOGIC
     # -------------------------------------------------
     def update(self, instance, validated_data):
         spouse_id = self.initial_data.get("spouse_id")
-        parent_id = self.initial_data.get("parent_id")
+        father_id = self.initial_data.get("father_id")
+        mother_id = self.initial_data.get("mother_id")
 
         with transaction.atomic():
             instance = super().update(instance, validated_data)
@@ -133,21 +168,31 @@ class MemberSerializer(serializers.ModelSerializer):
             # -------- SPOUSE LINK --------
             handle_spouse_link(instance, spouse_id)
 
-            # -------- PARENT LINK --------
-            if parent_id is not None:
-                if int(parent_id) == instance.id:
-                    raise serializers.ValidationError(
-                        {"parent_id": "Cannot assign self as parent"}
-                    )
-
+            # -------- FATHER LINK --------
+            if father_id is not None:
+                if int(father_id) == instance.id:
+                    raise serializers.ValidationError({"father_id": "Cannot assign self as father"})
+                if check_circular_dependency(instance.id, int(father_id)):
+                    raise serializers.ValidationError({"father_id": "Circular dependency detected. Cannot assign this member as father."})
                 try:
-                    parent_member = Member.objects.get(id=parent_id)
-                    instance.parent = parent_member
-                    instance.save(update_fields=["parent"])
+                    father_member = Member.objects.get(id=father_id)
+                    instance.father = father_member
+                    instance.save(update_fields=["father"])
                 except Member.DoesNotExist:
-                    raise serializers.ValidationError(
-                        {"parent_id": "Invalid parent id"}
-                    )
+                    raise serializers.ValidationError({"father_id": "Invalid father id"})
+                    
+            # -------- MOTHER LINK --------
+            if mother_id is not None:
+                if int(mother_id) == instance.id:
+                    raise serializers.ValidationError({"mother_id": "Cannot assign self as mother"})
+                if check_circular_dependency(instance.id, int(mother_id)):
+                    raise serializers.ValidationError({"mother_id": "Circular dependency detected. Cannot assign this member as mother."})
+                try:
+                    mother_member = Member.objects.get(id=mother_id)
+                    instance.mother = mother_member
+                    instance.save(update_fields=["mother"])
+                except Member.DoesNotExist:
+                    raise serializers.ValidationError({"mother_id": "Invalid mother id"})
 
         return instance
 
@@ -166,11 +211,8 @@ class MemberCreateSerializer(serializers.ModelSerializer):
         allow_null=True,
         write_only=True
     )
-    parent_id = serializers.IntegerField(
-        required=False,
-        allow_null=True,
-        write_only=True
-    )
+    father_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
+    mother_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
 
     class Meta:
         model = Member
@@ -190,7 +232,8 @@ class MemberCreateSerializer(serializers.ModelSerializer):
             "occupation",
             "highest_qualification",
             "spouse_id",
-            "parent_id",
+            "father_id",
+            "mother_id",
             "family",
             "user",
         )
@@ -220,19 +263,29 @@ class MemberCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         spouse_id = validated_data.pop("spouse_id", None)
-        parent_id = validated_data.pop("parent_id", None)
+        father_id = validated_data.pop("father_id", None)
+        mother_id = validated_data.pop("mother_id", None)
 
         with transaction.atomic():
             member = super().create(validated_data)
 
-            # Link parent if provided
-            if parent_id:
+            # Link father if provided
+            if father_id:
                 try:
-                    parent_member = Member.objects.get(id=parent_id)
-                    member.parent = parent_member
-                    member.save(update_fields=["parent"])
+                    father_member = Member.objects.get(id=father_id)
+                    member.father = father_member
+                    member.save(update_fields=["father"])
                 except Member.DoesNotExist:
-                    raise serializers.ValidationError({"parent_id": "Invalid parent id"})
+                    raise serializers.ValidationError({"father_id": "Invalid father id"})
+
+            # Link mother if provided
+            if mother_id:
+                try:
+                    mother_member = Member.objects.get(id=mother_id)
+                    member.mother = mother_member
+                    member.save(update_fields=["mother"])
+                except Member.DoesNotExist:
+                    raise serializers.ValidationError({"mother_id": "Invalid mother id"})
 
             # Link spouse if provided
             handle_spouse_link(member, spouse_id)
@@ -255,11 +308,8 @@ class MemberProfileUpdateSerializer(serializers.ModelSerializer):
         allow_null=True,
         write_only=True
     )
-    parent_id = serializers.IntegerField(
-        required=False,
-        allow_null=True,
-        write_only=True
-    )
+    father_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
+    mother_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
 
     class Meta:
         model = Member
@@ -278,7 +328,8 @@ class MemberProfileUpdateSerializer(serializers.ModelSerializer):
             "occupation",
             "highest_qualification",
             "spouse_id",
-            "parent_id",
+            "father_id",
+            "mother_id",
             "native_place",
             "family",
             "user",
@@ -312,7 +363,8 @@ class MemberProfileUpdateSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         spouse_id = validated_data.pop("spouse_id", None)
-        parent_id = validated_data.pop("parent_id", None)
+        father_id = validated_data.pop("father_id", None)
+        mother_id = validated_data.pop("mother_id", None)
 
         with transaction.atomic():
             instance = super().update(instance, validated_data)
@@ -320,15 +372,30 @@ class MemberProfileUpdateSerializer(serializers.ModelSerializer):
             # Update spouse
             handle_spouse_link(instance, spouse_id)
 
-            # Update parent
-            if parent_id is not None:
-                if parent_id == instance.id:
-                    raise serializers.ValidationError({"parent_id": "Cannot assign self as parent"})
+            # Update father
+            if father_id is not None:
+                if father_id == instance.id:
+                    raise serializers.ValidationError({"father_id": "Cannot assign self as father"})
+                if check_circular_dependency(instance.id, father_id):
+                    raise serializers.ValidationError({"father_id": "Circular dependency detected. Cannot assign this member as father."})
                 try:
-                    parent_member = Member.objects.get(id=parent_id)
-                    instance.parent = parent_member
-                    instance.save(update_fields=["parent"])
+                    father_member = Member.objects.get(id=father_id)
+                    instance.father = father_member
+                    instance.save(update_fields=["father"])
                 except Member.DoesNotExist:
-                    raise serializers.ValidationError({"parent_id": "Invalid parent id"})
+                    raise serializers.ValidationError({"father_id": "Invalid father id"})
+
+            # Update mother
+            if mother_id is not None:
+                if mother_id == instance.id:
+                    raise serializers.ValidationError({"mother_id": "Cannot assign self as mother"})
+                if check_circular_dependency(instance.id, mother_id):
+                    raise serializers.ValidationError({"mother_id": "Circular dependency detected. Cannot assign this member as mother."})
+                try:
+                    mother_member = Member.objects.get(id=mother_id)
+                    instance.mother = mother_member
+                    instance.save(update_fields=["mother"])
+                except Member.DoesNotExist:
+                    raise serializers.ValidationError({"mother_id": "Invalid mother id"})
 
         return instance

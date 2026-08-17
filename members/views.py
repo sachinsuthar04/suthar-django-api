@@ -15,7 +15,8 @@ from drf_yasg import openapi
 
 from members.signals import sync_member_to_profile_helper
 from notifications.models import Notification
-from .models import Member, Family, MemberRole, MemberStatus, Community
+from django.db.models import Q
+from .models import Member, Family, MemberRole, MemberStatus, Community, RelationshipRequest, RelationshipRequestStatus, MemberRelation
 from .serializers import (
     MemberSerializer,
     MemberCreateSerializer,
@@ -286,3 +287,192 @@ class MemberDetailView(generics.RetrieveUpdateAPIView):
     @swagger_auto_schema(request_body=MemberSerializer, responses={200: MemberSerializer})
     def update(self, request, *args, **kwargs):
         return super().update(request, *args, **kwargs)
+
+# ============================================================
+# FAMILY TREE VIEW
+# ============================================================
+class FamilyTreeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        member = Member.objects.filter(user=user).first()
+        if not member:
+            return Response({"success": False, "message": "Member not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        nodes_to_return = set()
+        edges = []
+
+        def add_member(m):
+            if m not in nodes_to_return:
+                nodes_to_return.add(m)
+
+        family_members = Member.objects.filter(family=member.family).select_related('father', 'mother', 'spouse')
+        for fm in family_members:
+            add_member(fm)
+            if fm.father:
+                add_member(fm.father)
+                edges.append({"source": fm.father.id, "target": fm.id, "type": "father"})
+            if fm.mother:
+                add_member(fm.mother)
+                edges.append({"source": fm.mother.id, "target": fm.id, "type": "mother"})
+            if fm.spouse:
+                add_member(fm.spouse)
+                if fm.id < fm.spouse.id:
+                    edges.append({"source": fm.id, "target": fm.spouse.id, "type": "spouse"})
+
+        serialized_nodes = MemberSerializer(nodes_to_return, many=True, context={'request': request}).data
+
+        return Response({
+            "success": True,
+            "tree": {
+                "nodes": serialized_nodes,
+                "edges": edges
+            }
+        })
+
+# ============================================================
+# MEMBER SEARCH (For linking existing members)
+# ============================================================
+class MemberSearchView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        query = request.GET.get('q', '').strip()
+        if not query:
+            return Response({"success": True, "members": []})
+
+        members = Member.objects.filter(
+            Q(mobile__icontains=query) | Q(name__icontains=query)
+        ).exclude(user=request.user)[:20]
+
+        return Response({
+            "success": True,
+            "members": MemberSerializer(members, many=True, context={'request': request}).data
+        })
+
+# ============================================================
+# RELATIONSHIP REQUESTS
+# ============================================================
+class RelationshipRequestView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        member = Member.objects.filter(user=request.user).first()
+        if not member:
+            return Response({"success": False, "message": "Member not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        requests = RelationshipRequest.objects.filter(receiver=member, status=RelationshipRequestStatus.PENDING)
+        data = []
+        for req in requests:
+            data.append({
+                "id": req.id,
+                "sender": MemberSerializer(req.sender, context={'request': request}).data,
+                "proposed_relation": req.proposed_relation,
+                "created_at": req.created_at
+            })
+        return Response({"success": True, "requests": data})
+
+    def post(self, request):
+        member = Member.objects.filter(user=request.user).first()
+        if not member:
+            return Response({"success": False, "message": "Member not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        receiver_id = request.data.get('receiver_id')
+        proposed_relation = request.data.get('proposed_relation')
+
+        if not receiver_id or not proposed_relation:
+            return Response({"success": False, "message": "Missing fields"}, status=status.HTTP_400_BAD_REQUEST)
+
+        receiver = get_object_or_404(Member, id=receiver_id)
+
+        if receiver == member:
+            return Response({"success": False, "message": "Cannot send request to yourself"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if RelationshipRequest.objects.filter(sender=member, receiver=receiver, status=RelationshipRequestStatus.PENDING).exists():
+            return Response({"success": False, "message": "Pending request already exists"}, status=status.HTTP_400_BAD_REQUEST)
+
+        req = RelationshipRequest.objects.create(
+            sender=member,
+            receiver=receiver,
+            proposed_relation=proposed_relation
+        )
+
+        if receiver.user:
+            Notification.objects.create(
+                user=receiver.user,
+                title="New Family Request",
+                message=f"{member.name} has added you as their {proposed_relation}. Please review.",
+                type="family_request",
+                reference_id=req.id,
+                reference_type="relationship_request",
+                action_date=timezone.now(),
+            )
+
+        return Response({"success": True, "message": "Request sent"})
+
+class RelationshipRequestRespondView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, pk):
+        member = Member.objects.filter(user=request.user).first()
+        if not member:
+            return Response({"success": False, "message": "Member not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        req = get_object_or_404(RelationshipRequest, id=pk, receiver=member)
+        action = request.data.get('action')
+
+        if req.status != RelationshipRequestStatus.PENDING:
+            return Response({"success": False, "message": "Request already processed"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if action == 'accept':
+            req.status = RelationshipRequestStatus.ACCEPTED
+            sender = req.sender
+            relation = req.proposed_relation
+            
+            from .serializers import check_circular_dependency
+            
+            if relation == MemberRelation.FATHER:
+                if check_circular_dependency(sender.id, member.id):
+                    return Response({"success": False, "message": "Circular dependency detected"}, status=status.HTTP_400_BAD_REQUEST)
+                sender.father = member
+                sender.save()
+            elif relation == MemberRelation.MOTHER:
+                if check_circular_dependency(sender.id, member.id):
+                    return Response({"success": False, "message": "Circular dependency detected"}, status=status.HTTP_400_BAD_REQUEST)
+                sender.mother = member
+                sender.save()
+            elif relation == MemberRelation.SPOUSE:
+                from .serializers import handle_spouse_link
+                try:
+                    handle_spouse_link(sender, member.id)
+                except Exception as e:
+                    return Response({"success": False, "message": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            elif relation == MemberRelation.SON or relation == MemberRelation.DAUGHTER:
+                if check_circular_dependency(member.id, sender.id):
+                    return Response({"success": False, "message": "Circular dependency detected"}, status=status.HTTP_400_BAD_REQUEST)
+                if sender.gender == 'female':
+                    member.mother = sender
+                else:
+                    member.father = sender
+                member.save()
+
+            if sender.user:
+                Notification.objects.create(
+                    user=sender.user,
+                    title="Family Request Accepted",
+                    message=f"{member.name} accepted your family request.",
+                    type="family_request_accepted",
+                    reference_id=req.id,
+                    reference_type="relationship_request",
+                    action_date=timezone.now(),
+                )
+        elif action == 'reject':
+            req.status = RelationshipRequestStatus.REJECTED
+        else:
+            return Response({"success": False, "message": "Invalid action"}, status=status.HTTP_400_BAD_REQUEST)
+
+        req.save()
+
+        return Response({"success": True, "message": f"Request {action}ed"})
