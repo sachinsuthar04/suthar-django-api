@@ -300,34 +300,57 @@ class FamilyTreeView(APIView):
         if not member:
             return Response({"success": False, "message": "Member not found"}, status=status.HTTP_404_NOT_FOUND)
 
+        from django.db.models import Q
+
+        queue = [member]
+        visited = set()
+        edges = set() # (source, target, type)
         nodes_to_return = set()
-        edges = []
 
-        def add_member(m):
-            if m not in nodes_to_return:
-                nodes_to_return.add(m)
+        while queue:
+            current = queue.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+            nodes_to_return.add(current)
 
-        family_members = Member.objects.filter(family=member.family).select_related('father', 'mother', 'spouse')
-        for fm in family_members:
-            add_member(fm)
-            if fm.father:
-                add_member(fm.father)
-                edges.append({"source": fm.father.id, "target": fm.id, "type": "father"})
-            if fm.mother:
-                add_member(fm.mother)
-                edges.append({"source": fm.mother.id, "target": fm.id, "type": "mother"})
-            if fm.spouse:
-                add_member(fm.spouse)
-                if fm.id < fm.spouse.id:
-                    edges.append({"source": fm.id, "target": fm.spouse.id, "type": "spouse"})
+            # 1. Spouse
+            if current.spouse:
+                if current.spouse not in visited:
+                    queue.append(current.spouse)
+                # Enforce source < target for spouse to prevent duplicates
+                s, t = (current.id, current.spouse.id) if current.id < current.spouse.id else (current.spouse.id, current.id)
+                edges.add((s, t, "spouse"))
 
+            # 2. Parents
+            if current.father:
+                if current.father not in visited:
+                    queue.append(current.father)
+                edges.add((current.father.id, current.id, "father"))
+            
+            if current.mother:
+                if current.mother not in visited:
+                    queue.append(current.mother)
+                edges.add((current.mother.id, current.id, "mother"))
+
+            # 3. Children
+            children = Member.objects.filter(Q(father=current) | Q(mother=current))
+            for child in children:
+                if child not in visited:
+                    queue.append(child)
+                if child.father == current:
+                    edges.add((current.id, child.id, "father"))
+                if child.mother == current:
+                    edges.add((current.id, child.id, "mother"))
+
+        formatted_edges = [{"source": s, "target": t, "type": edge_type} for s, t, edge_type in edges]
         serialized_nodes = MemberSerializer(nodes_to_return, many=True, context={'request': request}).data
 
         return Response({
             "success": True,
             "tree": {
                 "nodes": serialized_nodes,
-                "edges": edges
+                "edges": formatted_edges
             }
         })
 
