@@ -171,6 +171,43 @@ class FamilyHeadUpdateMember(APIView):
             status=status.HTTP_200_OK,
         )
 
+# ============================================================
+# FAMILY HEAD → DELETE MEMBER
+# ============================================================
+class FamilyHeadDeleteMember(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def delete(self, request, member_id):
+        user = request.user
+
+        # 1️⃣ Verify Family Head
+        try:
+            head_member = Member.objects.get(user=user, role=MemberRole.FAMILY_HEAD)
+        except Member.DoesNotExist:
+            return Response({"success": False, "message": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+
+        # 2️⃣ Ensure Family exists
+        family, _ = Family.objects.get_or_create(head=user)
+        if head_member.family != family:
+            head_member.family = family
+            head_member.save(update_fields=["family"])
+
+        # 3️⃣ Fetch member from same family
+        member = get_object_or_404(Member, id=member_id, family=family)
+
+        # 4️⃣ Prevent self deletion
+        if member.id == head_member.id:
+            return Response({"success": False, "message": "You cannot delete yourself from the family."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 5️⃣ Delete member
+        member.delete()
+
+        return Response(
+            {"success": True, "message": "Family member deleted successfully."},
+            status=status.HTTP_200_OK,
+        )
+
 
 # ============================================================
 # MY FAMILY MEMBERS
