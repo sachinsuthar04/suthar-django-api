@@ -448,4 +448,38 @@ class MemberProfileUpdateSerializer(serializers.ModelSerializer):
                 except Member.DoesNotExist:
                     raise serializers.ValidationError({"mother_id": "Invalid mother id"})
 
+            # Handle backward linking based on relation
+            request = self.context.get("request")
+            relation = (instance.relation or "").lower()
+            if request and hasattr(request, "user") and request.user.is_authenticated:
+                creator = Member.objects.filter(user=request.user).first()
+                if creator and creator.id != instance.id:
+                    if relation == "father":
+                        if not check_circular_dependency(creator.id, instance.id):
+                            creator.father = instance
+                            creator.save(update_fields=["father"])
+                    elif relation == "mother":
+                        if not check_circular_dependency(creator.id, instance.id):
+                            creator.mother = instance
+                            creator.save(update_fields=["mother"])
+                    elif relation == "spouse":
+                        handle_spouse_link(creator, instance.id)
+                    elif relation in ["son", "daughter"]:
+                        if creator.gender == "female":
+                            instance.mother = creator
+                            instance.save(update_fields=["mother"])
+                        else:
+                            instance.father = creator
+                            instance.save(update_fields=["father"])
+                    elif relation in ["brother", "sister"]:
+                        updated_parents = False
+                        if creator.father:
+                            instance.father = creator.father
+                            updated_parents = True
+                        if creator.mother:
+                            instance.mother = creator.mother
+                            updated_parents = True
+                        if updated_parents:
+                            instance.save(update_fields=["father", "mother"])
+
         return instance
