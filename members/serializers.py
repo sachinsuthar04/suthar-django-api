@@ -319,6 +319,23 @@ class MemberCreateSerializer(serializers.ModelSerializer):
                         creator.save(update_fields=["mother"])
                     elif relation == "spouse":
                         handle_spouse_link(creator, member.id)
+                    elif relation in ["son", "daughter"]:
+                        if creator.gender == "female":
+                            member.mother = creator
+                            member.save(update_fields=["mother"])
+                        else:
+                            member.father = creator
+                            member.save(update_fields=["father"])
+                    elif relation in ["brother", "sister"]:
+                        updated = False
+                        if creator.father:
+                            member.father = creator.father
+                            updated = True
+                        if creator.mother:
+                            member.mother = creator.mother
+                            updated = True
+                        if updated:
+                            member.save(update_fields=["father", "mother"])
 
             # Link spouse if provided
             handle_spouse_link(member, spouse_id)
