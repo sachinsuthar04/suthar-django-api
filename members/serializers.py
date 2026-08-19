@@ -112,6 +112,7 @@ class MemberSerializer(serializers.ModelSerializer):
     spouse_id = serializers.SerializerMethodField()
     father_id = serializers.SerializerMethodField()
     mother_id = serializers.SerializerMethodField()
+    calculated_relation = serializers.SerializerMethodField()
 
     class Meta:
         model = Member
@@ -153,6 +154,13 @@ class MemberSerializer(serializers.ModelSerializer):
 
     def get_mother_id(self, obj):
         return obj.mother.id if obj.mother else None
+
+    def get_calculated_relation(self, obj):
+        from .utils import get_relationship
+        root_member = self.context.get("root_member")
+        if root_member:
+            return get_relationship(root_member, obj)
+        return (obj.relation or "").capitalize() if obj.relation else "Relative"
 
     # -------------------------------------------------
     # UPDATE LOGIC

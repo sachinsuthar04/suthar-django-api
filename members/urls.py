@@ -22,6 +22,7 @@ urlpatterns = [
     path('my-family/', MyFamilyMembers.as_view()),      # Logged user
     path('<int:pk>/', MemberDetailView.as_view()),      # Detail + Update
     path('tree/', FamilyTreeView.as_view()),            # Family tree
+    path('tree/<int:pk>/', FamilyTreeView.as_view()),   # Family tree for specific member
     path('search/', MemberSearchView.as_view()),        # Search members
     path('relationship-requests/', RelationshipRequestView.as_view()), # Get/Create requests
     path('relationship-requests/<int:pk>/respond/', RelationshipRequestRespondView.as_view()), # Accept/reject requests

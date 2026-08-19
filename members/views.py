@@ -331,15 +331,24 @@ class MemberDetailView(generics.RetrieveUpdateAPIView):
 class FamilyTreeView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def get(self, request):
+    def get(self, request, pk=None):
         user = request.user
-        member = Member.objects.filter(user=user).first()
-        if not member:
+        requesting_member = Member.objects.filter(user=user).first()
+        if not requesting_member:
             return Response({"success": False, "message": "Member not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        if pk:
+            from django.shortcuts import get_object_or_404
+            root_member = get_object_or_404(Member, pk=pk)
+            # Optionally ensure the root member is in the same family to prevent unauthorized access
+            if root_member.family_id != requesting_member.family_id and not request.user.is_staff:
+                return Response({"success": False, "message": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+        else:
+            root_member = requesting_member
 
         from django.db.models import Q
 
-        queue = [member]
+        queue = [root_member]
         visited = set()
         edges = set() # (source, target, type)
         nodes_to_return = set()
@@ -381,7 +390,7 @@ class FamilyTreeView(APIView):
                     edges.add((current.id, child.id, "mother"))
 
         formatted_edges = [{"source": s, "target": t, "type": edge_type} for s, t, edge_type in edges]
-        serialized_nodes = MemberSerializer(nodes_to_return, many=True, context={'request': request}).data
+        serialized_nodes = MemberSerializer(nodes_to_return, many=True, context={'request': request, 'root_member': root_member}).data
 
         return Response({
             "success": True,
