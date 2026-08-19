@@ -340,57 +340,67 @@ class FamilyTreeView(APIView):
         if pk:
             from django.shortcuts import get_object_or_404
             root_member = get_object_or_404(Member, pk=pk)
-            # Optionally ensure the root member is in the same family to prevent unauthorized access
-            if root_member.family_id != requesting_member.family_id and not request.user.is_staff:
+            if requesting_member.family_id and root_member.family_id != requesting_member.family_id and not request.user.is_staff:
                 return Response({"success": False, "message": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
         else:
             root_member = requesting_member
 
+        from .utils import heal_family_relations
+        if root_member.family:
+            heal_family_relations(root_member.family)
+            root_member.refresh_from_db()
+
         from django.db.models import Q
 
-        queue = [root_member]
+        # 1. Fetch all family members
+        if root_member.family:
+            family_members = list(Member.objects.filter(family=root_member.family))
+        else:
+            family_members = [root_member]
+
+        queue = list(family_members)
         visited = set()
-        edges = set() # (source, target, type)
-        nodes_to_return = set()
+        nodes_dict = {}
 
         while queue:
             current = queue.pop(0)
-            if current in visited:
+            if current.id in visited:
                 continue
-            visited.add(current)
-            nodes_to_return.add(current)
+            visited.add(current.id)
+            nodes_dict[current.id] = current
 
             # 1. Spouse
-            if current.spouse:
-                if current.spouse not in visited:
+            if current.spouse_id:
+                if current.spouse_id not in visited and current.spouse:
                     queue.append(current.spouse)
-                # Enforce source < target for spouse to prevent duplicates
-                s, t = (current.id, current.spouse.id) if current.id < current.spouse.id else (current.spouse.id, current.id)
-                edges.add((s, t, "spouse"))
 
             # 2. Parents
-            if current.father:
-                if current.father not in visited:
+            if current.father_id:
+                if current.father_id not in visited and current.father:
                     queue.append(current.father)
-                edges.add((current.father.id, current.id, "father"))
             
-            if current.mother:
-                if current.mother not in visited:
+            if current.mother_id:
+                if current.mother_id not in visited and current.mother:
                     queue.append(current.mother)
-                edges.add((current.mother.id, current.id, "mother"))
 
             # 3. Children
             children = Member.objects.filter(Q(father=current) | Q(mother=current))
             for child in children:
-                if child not in visited:
+                if child.id not in visited:
                     queue.append(child)
-                if child.father == current:
-                    edges.add((current.id, child.id, "father"))
-                if child.mother == current:
-                    edges.add((current.id, child.id, "mother"))
 
-        formatted_edges = [{"source": s, "target": t, "type": edge_type} for s, t, edge_type in edges]
-        serialized_nodes = MemberSerializer(nodes_to_return, many=True, context={'request': request, 'root_member': root_member}).data
+        edges = set() # (source, target, type)
+        for node in nodes_dict.values():
+            if node.spouse_id and node.spouse_id in nodes_dict:
+                s, t = (node.id, node.spouse_id) if node.id < node.spouse_id else (node.spouse_id, node.id)
+                edges.add((s, t, "spouse"))
+            if node.father_id and node.father_id in nodes_dict:
+                edges.add((node.father_id, node.id, "father"))
+            if node.mother_id and node.mother_id in nodes_dict:
+                edges.add((node.mother_id, node.id, "mother"))
+
+        formatted_edges = [{"source": s, "target": t, "type": edge_type} for s, t, edge_type in sorted(edges)]
+        serialized_nodes = MemberSerializer(list(nodes_dict.values()), many=True, context={'request': request, 'root_member': root_member}).data
 
         return Response({
             "success": True,

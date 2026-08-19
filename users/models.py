@@ -12,10 +12,12 @@ class UserManager(BaseUserManager):
         if role == "member" and not phone:
             raise ValueError("Member must have a phone number.")
 
+        country_code = extra_fields.pop("country_code", "+91")
+
         user = self.model(
             phone=phone,
             email=email,
-            country_code=extra_fields.get("country_code", "+91"),
+            country_code=country_code,
             **extra_fields,
         )
 
