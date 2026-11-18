@@ -7,6 +7,10 @@ from django.contrib.auth import get_user_model
 from members.constants import Community
 from .models import UserProfile, PersonalDetail, EducationDetail, JobDetail
 from members.models import Member, MemberGender, MemberStatus, MemberRole
+from members.permissions import get_member, is_app_admin
+from members.services.changes import audit, queue_changes, split_key_changes
+from members.signals import sync_member_to_profile_helper
+from members.services.households import request_new_household, HeadRequestError, validate_new_household
 from rest_framework.parsers import MultiPartParser
 from rest_framework.parsers import FormParser
 
@@ -26,6 +30,17 @@ class ProfileDetailView(APIView):
                 {"success": False, "message": "Profile not found"},
                 status=status.HTTP_404_NOT_FOUND,
             )
+
+        # own profile, an admin, or a member of the same family only
+        if user.id != request.user.id and not is_app_admin(request.user):
+            me = get_member(request.user)
+            other = get_member(user)
+            same_family = bool(me and other and me.family_id and me.family_id == other.family_id)
+            if not (same_family and me.status == MemberStatus.ACTIVE):
+                return Response(
+                    {"success": False, "message": "Not allowed"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
         profile = (
             UserProfile.objects
@@ -95,20 +110,52 @@ class ProfileDetailView(APIView):
 # SAVE / UPDATE PROFILE (POST)
 # ==================================================
 class SaveUserProfileAPI(APIView):
+    """
+    Save / update the logged-in user's profile.
+
+    Security rules (enforced HERE, never trusted from the client):
+      * `status` is never taken from the request - approval is an admin decision
+      * `role` is never taken from the request; asking for "familyHead" only
+        creates a pending request that an admin approves together with the
+        membership
+      * key fields (name, gender, dob) of an already approved member are queued
+        for admin review instead of being applied
+    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         data = request.data.get("data", request.data)
+        user = request.user
 
-        # ---------- PROFILE ----------
-        profile, _ = UserProfile.objects.get_or_create(user=request.user)
+        profile, _ = UserProfile.objects.get_or_create(user=user)
+        personal, _ = PersonalDetail.objects.get_or_create(profile=profile)
+        education, _ = EducationDetail.objects.get_or_create(profile=profile)
+        job, _ = JobDetail.objects.get_or_create(profile=profile)
 
-        if "selectedRole" in data:
-            profile.registration_role = data.get("selectedRole", "member")
+        member = get_member(user)
+        wants_head = data.get("selectedRole") == "familyHead"
 
         # ---------- PERSONAL ----------
-        p_data = data.get("personal", {})
-        personal, _ = PersonalDetail.objects.get_or_create(profile=profile)
+        p_data = data.get("personal", {}) or {}
+
+        # key-field review for approved members
+        queued = {}
+        if member is not None:
+            proposed = {}
+            if "fullName" in p_data:
+                proposed["name"] = p_data["fullName"]
+            if "gender" in p_data:
+                proposed["gender"] = p_data["gender"]
+            if "dob" in p_data:
+                proposed["date_of_birth"] = p_data["dob"]
+            _, queued = split_key_changes(member, proposed)
+        skip_personal = set()
+        if "name" in queued:
+            skip_personal.add("fullName")
+        if "gender" in queued:
+            skip_personal.add("gender")
+        if "date_of_birth" in queued:
+            skip_personal.add("dob")
 
         personal_map = {
             "fullName": "full_name",
@@ -122,17 +169,14 @@ class SaveUserProfileAPI(APIView):
             "nativePlace": "native_place",
             "currentCity": "current_city",
             "community": "community",
-            "status": "status",
+            # "status" intentionally absent
         }
-
         for key, attr in personal_map.items():
-            if key in p_data:
+            if key in p_data and key not in skip_personal:
                 setattr(personal, attr, p_data[key])
 
         # ---------- EDUCATION ----------
-        e_data = data.get("education", {})
-        education, _ = EducationDetail.objects.get_or_create(profile=profile)
-
+        e_data = data.get("education", {}) or {}
         for key, attr in {
             "qualification": "qualification",
             "institution": "institution",
@@ -145,9 +189,7 @@ class SaveUserProfileAPI(APIView):
                 setattr(education, attr, e_data[key])
 
         # ---------- JOB ----------
-        j_data = data.get("job", {})
-        job, _ = JobDetail.objects.get_or_create(profile=profile)
-
+        j_data = data.get("job", {}) or {}
         for key, attr in {
             "occupationType": "occupation_type",
             "companyName": "company_name",
@@ -160,19 +202,16 @@ class SaveUserProfileAPI(APIView):
                 setattr(job, attr, j_data[key])
 
         # ---------- PROFILE COMPLETION ----------
+        # (queued key fields are still "filled": the approved value counts)
         mandatory_fields = [
-            personal.full_name,
+            personal.full_name or (member.name if member else None),
             personal.native_place,
-            personal.gender,
-            personal.dob,
+            personal.gender or (member.gender if member else None),
+            personal.dob or (member.date_of_birth if member else None),
             personal.phone,
-            profile.registration_role,
         ]
-
-        profile.is_profile_completed = all(
-            field not in (None, "", [])
-            for field in mandatory_fields
-        )
+        profile_completed = all(f not in (None, "", []) for f in mandatory_fields)
+        profile.is_profile_completed = profile_completed
 
         # ---------- SAVE ----------
         profile.save()
@@ -180,49 +219,88 @@ class SaveUserProfileAPI(APIView):
         education.save()
         job.save()
 
-        # ---------- MEMBER SYNC ----------
+        # ---------- MEMBER (single source of approval truth) ----------
         gender_map = {
             "male": MemberGender.MALE,
             "female": MemberGender.FEMALE,
             "other": MemberGender.OTHER,
         }
+        common = {
+            "email": personal.email,
+            "address": personal.address,
+            "city": personal.current_city,
+            "native_place": personal.native_place,
+            "profile_image": personal.profile_image,
+            "occupation": job.occupation_type,
+            "highest_qualification": education.qualification,
+            "profile_completed": profile_completed,
+        }
 
-        Member.objects.update_or_create(
-            user=request.user,
-            defaults={
-                "community": personal.community or Community.SUTHAR,
-                "name": personal.full_name,
-                "mobile": personal.phone,
-                "country_code": personal.country_code,
-                "gender": gender_map.get(
-                    (personal.gender or "").lower(),
-                    MemberGender.OTHER,
-                ),
-                "date_of_birth": personal.dob,
-                "email": personal.email,
-                "address": personal.address,
-                "city": personal.current_city,
-                "native_place": personal.native_place,
+        if member is None:
+            member = Member.objects.create(
+                user=user,
+                community=personal.community or Community.SUTHAR,
+                name=personal.full_name,
+                mobile=personal.phone,
+                country_code=personal.country_code,
+                gender=gender_map.get((personal.gender or "").lower(), MemberGender.OTHER),
+                date_of_birth=personal.dob,
+                role=MemberRole.MEMBER,          # never from the client
+                status=MemberStatus.PENDING,     # never from the client
+                **common,
+            )
+        else:
+            for field, value in common.items():
+                setattr(member, field, value)
+            if not member.community:
+                member.community = personal.community or Community.SUTHAR
+            # key fields that are NOT queued are applied directly
+            if "name" not in queued:
+                member.name = personal.full_name or member.name
+            if "gender" not in queued and personal.gender:
+                member.gender = gender_map.get(personal.gender.lower(), MemberGender.OTHER)
+            if "date_of_birth" not in queued and personal.dob:
+                member.date_of_birth = personal.dob
+            member.save()
+            if queued:
+                queue_changes(member, queued, user)
 
-                # ✅ SYNC IMAGE HERE (ONLY)
-                "profile_image": personal.profile_image,
+        # ---------- "Edit and resend": a rejected member who fixes the profile
+        # goes back into the review queue (the reason stays in the audit log) ----------
+        resubmitted = False
+        if member.status == MemberStatus.REJECTED and profile_completed:
+            old_reason = member.status_reason
+            member.status = MemberStatus.PENDING
+            member.status_reason = None
+            member.save(update_fields=["status", "status_reason"])
+            sync_member_to_profile_helper(member)
+            audit(user, "member_resubmitted", "member", member.id, previous_reason=old_reason)
+            resubmitted = True
 
-                "occupation": job.occupation_type,
-                "highest_qualification": education.qualification,
-                "profile_completed": profile.is_profile_completed,
-                "role": (
-                    MemberRole.FAMILY_HEAD
-                    if profile.registration_role == "familyHead"
-                    else MemberRole.MEMBER
-                ),
-                "status": personal.status or MemberStatus.PENDING,
-            },
-        )
+        # ---------- FAMILY HEAD REQUEST ----------
+        head_request_pending = False
+        if wants_head and member.role != MemberRole.FAMILY_HEAD and member.family_id is None:
+            try:
+                validate_new_household(member)
+                request_new_household(member, user)
+                head_request_pending = True
+            except HeadRequestError:
+                pass
+
+        # profile role mirrors the real role, not the requested one
+        real_role = "familyHead" if member.role == MemberRole.FAMILY_HEAD else "member"
+        if profile.registration_role != real_role:
+            profile.registration_role = real_role
+            profile.save(update_fields=["registration_role"])
 
         return Response(
             {
                 "success": True,
-                "profileCompleted": profile.is_profile_completed,
+                "profileCompleted": profile_completed,
+                "status": member.status,
+                "pendingReview": sorted(queued),
+                "headRequestPending": head_request_pending,
+                "resubmitted": resubmitted,
                 "message": "Profile saved successfully",
             },
             status=status.HTTP_200_OK,
@@ -243,9 +321,8 @@ class UploadProfileImageView(APIView):
                 status=400,
             )
 
-        personal, _ = PersonalDetail.objects.get_or_create(
-            profile__user=request.user
-        )
+        profile, _ = UserProfile.objects.get_or_create(user=request.user)
+        personal, _ = PersonalDetail.objects.get_or_create(profile=profile)
 
         personal.profile_image = file
         personal.save()

@@ -171,7 +171,10 @@ def heal_family_relations(family: Family | int | None):
                 dirty_members.add(sp)
 
             # Any child having m as father should have sp as mother (if sp is female)
-            if m.gender == MemberGender.MALE or sp.gender == MemberGender.FEMALE:
+            # only a male + female couple can be father + mother. Never guess
+            # (a wrongly-gendered spouse used to make the head his own children's mother).
+            genders = {m.gender, sp.gender}
+            if genders == {MemberGender.MALE, MemberGender.FEMALE}:
                 father_m = m if m.gender == MemberGender.MALE else sp
                 mother_m = sp if sp.gender == MemberGender.FEMALE else m
                 for child in members:
@@ -189,119 +192,26 @@ def heal_family_relations(family: Family | int | None):
                 m.save(update_fields=["father", "mother", "spouse"])
 
 
+def get_relationship_obj(viewer: Member, target: Member):
+    """Relation of `target` relative to `viewer` (Rel(key, label)), computed by
+    the kinship engine from a bounded neighbourhood of the viewer."""
+    from members.services.kinship import KinshipGraph, relation_between, collect_ego_tree, rel
+
+    if not viewer or not target:
+        return rel("relative")
+    if viewer.id == target.id:
+        return rel("self")
+    members = collect_ego_tree(viewer, up=3, down=3, collateral=2, include_inlaws=True, include_household=False)
+    members.setdefault(target.id, target)
+    graph = KinshipGraph.from_members(members.values())
+    return relation_between(graph, viewer.id, target.id)
+
+
 def get_relationship(viewer: Member, target: Member) -> str:
-    """
-    Calculates the relationship of the target relative to the viewer.
-    Returns strings like 'Father', 'Mother', 'Son', 'Daughter', 'Brother', 'Sister',
-    'Husband', 'Wife', 'Grandfather', 'Grandmother', 'Grandson', 'Granddaughter',
-    'Uncle', 'Bua', 'Nephew', 'Niece', etc.
-    """
+    """English label of the relation of `target` to `viewer` (Father, Kaka, Saala ...)."""
     if not viewer or not target:
         return "Unknown"
-
-    if viewer.id == target.id:
-        return "Self"
-
-    target_gender = target.gender
-    is_male = (target_gender == MemberGender.MALE)
-    is_female = (target_gender == MemberGender.FEMALE)
-
-    def gender_label(male_label, female_label, default_label):
-        if is_male:
-            return male_label
-        if is_female:
-            return female_label
-        return default_label
-
-    # 1. Spouse
-    if (viewer.spouse_id == target.id) or (target.spouse_id == viewer.id):
-        return gender_label("Husband", "Wife", "Spouse")
-
-    # 2. Parents
-    if viewer.father_id == target.id:
-        return "Father"
-    if viewer.mother_id == target.id:
-        return "Mother"
-
-    # 3. Children
-    if target.father_id == viewer.id or target.mother_id == viewer.id:
-        return gender_label("Son", "Daughter", "Child")
-
-    # 4. Siblings (Sharing at least one parent or marked as brother/sister)
-    share_father = (viewer.father_id is not None and viewer.father_id == target.father_id)
-    share_mother = (viewer.mother_id is not None and viewer.mother_id == target.mother_id)
-    
-    if share_father or share_mother:
-        return gender_label("Brother", "Sister", "Sibling")
-
-    # 5. Grandparents
-    if viewer.father_id:
-        viewer_father = viewer.father
-        if viewer_father:
-            if viewer_father.father_id == target.id:
-                return "Grandfather"
-            if viewer_father.mother_id == target.id:
-                return "Grandmother"
-            
-    if viewer.mother_id:
-        viewer_mother = viewer.mother
-        if viewer_mother:
-            if viewer_mother.father_id == target.id:
-                return "Grandfather"
-            if viewer_mother.mother_id == target.id:
-                return "Grandmother"
-
-    # 6. Grandchildren
-    if target.father_id:
-        target_father = target.father
-        if target_father and (target_father.father_id == viewer.id or target_father.mother_id == viewer.id):
-            return gender_label("Grandson", "Granddaughter", "Grandchild")
-            
-    if target.mother_id:
-        target_mother = target.mother
-        if target_mother and (target_mother.father_id == viewer.id or target_mother.mother_id == viewer.id):
-            return gender_label("Grandson", "Granddaughter", "Grandchild")
-
-    # 7. Uncle & Aunt (Father's or Mother's siblings)
-    if viewer.father_id and viewer.father:
-        vf = viewer.father
-        vf_share_father = (vf.father_id is not None and vf.father_id == target.father_id)
-        vf_share_mother = (vf.mother_id is not None and vf.mother_id == target.mother_id)
-        if vf_share_father or vf_share_mother:
-            return "Uncle" if is_male else ("Bua" if is_female else "Uncle/Aunt")
-
-    if viewer.mother_id and viewer.mother:
-        vm = viewer.mother
-        vm_share_father = (vm.father_id is not None and vm.father_id == target.father_id)
-        vm_share_mother = (vm.mother_id is not None and vm.mother_id == target.mother_id)
-        if vm_share_father or vm_share_mother:
-            return "Uncle" if is_male else "Aunt"
-
-    # 8. Nephew & Niece (Sibling's children)
-    if target.father_id and target.father:
-        tf = target.father
-        tf_share_father = (viewer.father_id is not None and viewer.father_id == tf.father_id)
-        tf_share_mother = (viewer.mother_id is not None and viewer.mother_id == tf.mother_id)
-        if tf_share_father or tf_share_mother:
-            return gender_label("Nephew", "Niece", "Nephew/Niece")
-
-    if target.mother_id and target.mother:
-        tm = target.mother
-        tm_share_father = (viewer.father_id is not None and viewer.father_id == tm.father_id)
-        tm_share_mother = (viewer.mother_id is not None and viewer.mother_id == tm.mother_id)
-        if tm_share_father or tm_share_mother:
-            return gender_label("Nephew", "Niece", "Nephew/Niece")
-
-    # 9. In-laws (Spouse's parents)
-    if viewer.spouse_id and viewer.spouse:
-        vs = viewer.spouse
-        if vs.father_id == target.id:
-            return "Father-in-law"
-        if vs.mother_id == target.id:
-            return "Mother-in-law"
-
-    # Fallback to the stored relation
-    if target.relation:
+    result = get_relationship_obj(viewer, target)
+    if result.key == "relative" and target.relation:
         return str(target.relation).capitalize()
-
-    return "Relative"
+    return result.label

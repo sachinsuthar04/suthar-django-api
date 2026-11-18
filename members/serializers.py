@@ -38,7 +38,7 @@ def check_circular_dependency(member_id, new_parent_id):
 # =====================================================
 # 🔁 SHARED SPOUSE HANDLER (AUTO-LINK / AUTO-UNLINK)
 # =====================================================
-def handle_spouse_link(member: Member, spouse_id: int | None):
+def handle_spouse_link(member: Member, spouse_id: int | None, allow_cross_family: bool = False):
     """
     Bidirectional spouse link handler.
     - Auto-unlink old spouse
@@ -66,7 +66,7 @@ def handle_spouse_link(member: Member, spouse_id: int | None):
     if spouse.id == member.id:
         raise serializers.ValidationError({"spouse_id": "Cannot assign self as spouse"})
 
-    if spouse.family_id != member.family_id:
+    if not allow_cross_family and spouse.family_id != member.family_id:
         raise serializers.ValidationError({"spouse_id": "Spouse must belong to same family"})
 
     if spouse.spouse:
@@ -113,6 +113,7 @@ class MemberSerializer(serializers.ModelSerializer):
     father_id = serializers.SerializerMethodField()
     mother_id = serializers.SerializerMethodField()
     calculated_relation = serializers.SerializerMethodField()
+    relation_key = serializers.SerializerMethodField()
 
     class Meta:
         model = Member
@@ -121,7 +122,39 @@ class MemberSerializer(serializers.ModelSerializer):
             "family",
             "user",
             "created_at",
+            "status_reason",
+            "status_changed_at",
+            "status_changed_by",
         )
+
+    # fields hidden from people outside the household when hide_contact is set
+    CONTACT_FIELDS = ("mobile", "email", "address")
+
+    def _viewer(self):
+        """(is_admin, viewer_family_id) cached per request; None = no masking."""
+        request = self.context.get("request")
+        if request is None or not getattr(request, "user", None) or not request.user.is_authenticated:
+            return None
+        cached = getattr(request, "_viewer_info", None)
+        if cached is None:
+            from .permissions import is_app_admin, get_member
+            me = get_member(request.user)
+            cached = (is_app_admin(request.user), me.family_id if me else None)
+            request._viewer_info = cached
+        return cached
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        viewer = self._viewer()
+        if viewer and instance.hide_contact:
+            is_admin, family_id = viewer
+            same_family = family_id is not None and instance.family_id == family_id
+            own = getattr(self.context.get("request"), "user", None) and instance.user_id == self.context["request"].user.id
+            if not (is_admin or same_family or own):
+                for f in self.CONTACT_FIELDS:
+                    if f in data:
+                        data[f] = None
+        return data
 
     # -------------------------------------------------
     # IMAGE URL BUILDER
@@ -129,12 +162,13 @@ class MemberSerializer(serializers.ModelSerializer):
     def get_profileImageUrl(self, obj):
         request = self.context.get("request")
 
-        if not obj.user:
+        if not obj.user_id:
              return None
 
-        personal = PersonalDetail.objects.filter(
-            profile__user=obj.user
-        ).first()
+        try:  # served from select_related("user__user_profile__personal") when available
+            personal = obj.user.user_profile.personal
+        except Exception:
+            personal = PersonalDetail.objects.filter(profile__user_id=obj.user_id).first()
 
         if personal and personal.profile_image:
             if request:
@@ -147,20 +181,33 @@ class MemberSerializer(serializers.ModelSerializer):
     # RELATION IDS
     # -------------------------------------------------
     def get_spouse_id(self, obj):
-        return obj.spouse.id if obj.spouse else None
+        return obj.spouse_id
 
     def get_father_id(self, obj):
-        return obj.father.id if obj.father else None
+        return obj.father_id
 
     def get_mother_id(self, obj):
-        return obj.mother.id if obj.mother else None
+        return obj.mother_id
 
-    def get_calculated_relation(self, obj):
-        from .utils import get_relationship
+    def _relation(self, obj):
+        relations = self.context.get("relations")
+        if relations is not None and obj.id in relations:
+            return relations[obj.id]
         root_member = self.context.get("root_member")
         if root_member:
-            return get_relationship(root_member, obj)
+            from .utils import get_relationship_obj
+            return get_relationship_obj(root_member, obj)
+        return None
+
+    def get_calculated_relation(self, obj):
+        r = self._relation(obj)
+        if r:
+            return r.label
         return (obj.relation or "").capitalize() if obj.relation else "Relative"
+
+    def get_relation_key(self, obj):
+        r = self._relation(obj)
+        return r.key if r else None
 
     # -------------------------------------------------
     # UPDATE LOGIC
@@ -173,8 +220,9 @@ class MemberSerializer(serializers.ModelSerializer):
         with transaction.atomic():
             instance = super().update(instance, validated_data)
 
-            # -------- SPOUSE LINK --------
-            handle_spouse_link(instance, spouse_id)
+            # -------- SPOUSE LINK (only when the client sent it) --------
+            if "spouse_id" in self.initial_data:
+                handle_spouse_link(instance, spouse_id, allow_cross_family=True)
 
             # -------- FATHER LINK --------
             if father_id is not None and str(father_id).strip() != "":
@@ -243,6 +291,8 @@ class MemberCreateSerializer(serializers.ModelSerializer):
             "address",
             "city",
             "native_place",
+            "gotra",
+            "blood_group",
             "profile_image",
             "occupation",
             "highest_qualification",
@@ -401,6 +451,11 @@ class MemberProfileUpdateSerializer(serializers.ModelSerializer):
             "father_id",
             "mother_id",
             "native_place",
+            "gotra",
+            "blood_group",
+            "is_alive",
+            "date_of_death",
+            "hide_contact",
             "family",
             "user",
         )
@@ -432,6 +487,7 @@ class MemberProfileUpdateSerializer(serializers.ModelSerializer):
         return attrs
 
     def update(self, instance, validated_data):
+        spouse_sent = "spouse_id" in validated_data
         spouse_id = validated_data.pop("spouse_id", None)
         father_id = validated_data.pop("father_id", None)
         mother_id = validated_data.pop("mother_id", None)
@@ -439,8 +495,9 @@ class MemberProfileUpdateSerializer(serializers.ModelSerializer):
         with transaction.atomic():
             instance = super().update(instance, validated_data)
 
-            # Update spouse
-            handle_spouse_link(instance, spouse_id)
+            # Update spouse (only when the client sent the field)
+            if spouse_sent:
+                handle_spouse_link(instance, spouse_id)
 
             # Update father
             if father_id is not None:
@@ -508,3 +565,20 @@ class MemberProfileUpdateSerializer(serializers.ModelSerializer):
                 instance.refresh_from_db()
 
         return instance
+
+
+
+# =====================================================
+# SELF-EDIT SERIALIZER (a member editing his OWN record)
+# =====================================================
+class MemberSelfUpdateSerializer(serializers.ModelSerializer):
+    """Whitelist for self edits: no role / status / family / links / mobile."""
+
+    class Meta:
+        model = Member
+        fields = (
+            "name", "gender", "date_of_birth", "gotra",          # key fields (reviewed)
+            "email", "address", "city", "native_place", "blood_group",
+            "occupation", "highest_qualification", "profile_image",
+            "hide_contact",
+        )

@@ -55,7 +55,7 @@ class MemberGender(models.TextChoices):
 class Family(models.Model):
     head = models.OneToOneField(
         User,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,  # deleting a login must never delete the family
         related_name="members_managed_family",  # unique related_name
         null=True,
         blank=True
@@ -173,13 +173,40 @@ class Member(models.Model):
     # ---- System ----
     created_at = models.DateTimeField(auto_now_add=True)
     profile_completed = models.BooleanField(default=False)
-    
+
+    # ---- Life status ----
+    is_alive = models.BooleanField(default=True)
+    date_of_death = models.DateField(null=True, blank=True)
+
+    # ---- Privacy ----
+    hide_contact = models.BooleanField(
+        default=False,
+        help_text="Hide mobile/email/address from members outside the household",
+    )
+
+    # ---- Approval history ----
+    status_reason = models.TextField(null=True, blank=True)
+    status_changed_at = models.DateTimeField(null=True, blank=True)
+    status_changed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+
     class Meta:
         constraints = [
             models.UniqueConstraint(
                 fields=["country_code", "mobile", "family"],
                 name="unique_member_country_mobile_per_family",
-            )
+            ),
+            # exactly ONE family head per family (DB-level guarantee)
+            models.UniqueConstraint(
+                fields=["family"],
+                condition=models.Q(role="familyHead"),
+                name="unique_family_head_per_family",
+            ),
         ]
 
 
@@ -188,8 +215,8 @@ class Member(models.Model):
 
     @property
     def family_display_id(self):
-        if self.family and self.family.head:
-            return f"F_{self.family.head.id}"
+        if self.family and self.family.head_id:
+            return f"F_{self.family.head_id}"
         return "Unassigned"
 
     # -------------------------------------------------
@@ -253,3 +280,88 @@ class RelationshipRequest(models.Model):
 
     def __str__(self):
         return f"{self.sender.name} -> {self.receiver.name} ({self.proposed_relation}) [{self.status}]"
+
+
+# -------------------------------------------------
+# PROFILE CHANGE REQUEST (key-field edits after approval)
+# -------------------------------------------------
+class ReviewStatus(models.TextChoices):
+    PENDING = "pending", "Pending"
+    ACCEPTED = "accepted", "Accepted"
+    REJECTED = "rejected", "Rejected"
+
+
+class ProfileChangeRequest(models.Model):
+    """
+    Edits to key identity fields (name, gender, date of birth, gotra) of an
+    already-approved member are not applied directly: they wait here for an
+    admin.  `changes` = {"field": {"old": ..., "new": ...}} (JSON safe values).
+    """
+    member = models.ForeignKey(Member, on_delete=models.CASCADE, related_name="change_requests")
+    requested_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    changes = models.JSONField(default=dict)
+    status = models.CharField(max_length=20, choices=ReviewStatus.choices, default=ReviewStatus.PENDING)
+    reason = models.TextField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Change #{self.id} for {self.member_id} [{self.status}]"
+
+
+# -------------------------------------------------
+# FAMILY HEAD REQUEST (new household / transfer of headship)
+# -------------------------------------------------
+class HeadRequestKind(models.TextChoices):
+    NEW_HOUSEHOLD = "new_household", "New household"
+    TRANSFER = "transfer", "Transfer headship"
+
+
+class FamilyHeadRequest(models.Model):
+    kind = models.CharField(max_length=20, choices=HeadRequestKind.choices)
+    # NEW_HOUSEHOLD: the member who wants to head a new family
+    # TRANSFER: the member who will become the new head
+    member = models.ForeignKey(Member, on_delete=models.CASCADE, related_name="head_requests")
+    family = models.ForeignKey(Family, on_delete=models.CASCADE, null=True, blank=True, related_name="head_requests")
+    requested_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    note = models.TextField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=ReviewStatus.choices, default=ReviewStatus.PENDING)
+    reason = models.TextField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["member", "kind"],
+                condition=models.Q(status="pending"),
+                name="unique_pending_head_request_per_member_kind",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.kind} for {self.member_id} [{self.status}]"
+
+
+# -------------------------------------------------
+# AUDIT LOG
+# -------------------------------------------------
+class AuditLog(models.Model):
+    actor = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    action = models.CharField(max_length=60)
+    entity = models.CharField(max_length=40)
+    entity_id = models.PositiveIntegerField(null=True, blank=True)
+    data = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.action} {self.entity}#{self.entity_id}"

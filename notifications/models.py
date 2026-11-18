@@ -8,7 +8,11 @@ class Notification(models.Model):
         ("advertise", "Advertise"),
         ("approve", "Approve"),
         ("reject", "Reject"),
-     
+        ("family_request", "Family request"),
+        ("family_request_accepted", "Family request accepted"),
+        ("profile_change", "Profile change"),
+        ("head_request", "Head request"),
+
     )
 
     user = models.ForeignKey(
@@ -20,7 +24,7 @@ class Notification(models.Model):
 
     title = models.CharField(max_length=255)
     message = models.TextField()
-    type = models.CharField(max_length=20, choices=TYPE_CHOICES)
+    type = models.CharField(max_length=40, choices=TYPE_CHOICES)
     is_read = models.BooleanField(default=False)
 
     reference_id = models.PositiveIntegerField(null=True, blank=True)

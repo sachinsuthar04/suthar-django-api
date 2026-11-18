@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Event, Notice, Advertisement
+from .models import Event, Notice, Advertisement, going_families
 
 
 # -----------------------------
@@ -9,6 +9,17 @@ class EventSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(
         source="created_by.username", read_only=True
     )
+    going_count = serializers.SerializerMethodField()
+    i_am_going = serializers.SerializerMethodField()
+
+    def get_going_count(self, obj):
+        return going_families(obj)
+
+    def get_i_am_going(self, obj):
+        request = self.context.get("request")
+        if not request or not request.user.is_authenticated:
+            return False
+        return obj.rsvps.filter(member__user=request.user).exists()
 
     class Meta:
         model = Event

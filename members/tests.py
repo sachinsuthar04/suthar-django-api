@@ -91,6 +91,7 @@ class TenMemberFamilyTreeTests(TestCase):
             name="Head Member",
             gender=MemberGender.MALE,
             role=MemberRole.FAMILY_HEAD,
+            status="active",            # only approved members may use the API
             mobile="9510981420",
             date_of_birth=datetime.date(1990, 1, 1)
         )
@@ -228,6 +229,9 @@ class TenMemberFamilyTreeTests(TestCase):
         self.assertEqual(self.daughter.mother_id, self.spouse.id)
 
     def test_family_tree_api_view(self):
+        # Links are created by the WRITE paths (add/update member, management
+        # command sync_family_tree).  The tree GET itself is read-only.
+        heal_family_relations(self.family)
         factory = APIRequestFactory()
         request = factory.get('/api/members/tree/')
         force_authenticate(request, user=self.user)

@@ -1,5 +1,6 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import User
 
@@ -40,3 +41,16 @@ class MemberLoginView(APIView):
             "message": "OTP sent to phone",
             "user": {"id": user.id, "phone": user.phone}
         })
+
+
+class SaveFcmTokenView(APIView):
+    """Store the device push token of the logged-in user."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        token = (request.data.get("token") or request.data.get("fcm_token") or "").strip()
+        if not token:
+            return Response({"success": False, "message": "token is required"}, status=400)
+        request.user.fcm_token = token
+        request.user.save(update_fields=["fcm_token"])
+        return Response({"success": True, "message": "Token saved"})

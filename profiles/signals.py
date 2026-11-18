@@ -56,7 +56,9 @@ def sync_personal_to_member(sender, instance, **kwargs):
         "email": instance.email,
         "date_of_birth": instance.dob,
         "native_place": instance.native_place,
-        "status": instance.status,
+        # NOTE: status is deliberately NOT copied from the profile - approval
+        # status is owned by the Member row (admin decision) and only flows
+        # Member -> Profile.
     }
 
     # Gender mapping (SAFE)

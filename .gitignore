@@ -1,0 +1,6 @@
+TEST_ADMIN.local.txt
+
+# local data / build noise
+db.sqlite3.bak*
+__pycache__/
+*.pyc

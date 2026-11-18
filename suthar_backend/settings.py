@@ -14,9 +14,21 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 CSRF_TRUSTED_ORIGINS = ['https://*.onrender.com']
 
-SECRET_KEY = 'your-secret-key'
-DEBUG = True
-ALLOWED_HOSTS = ['*']
+# Configure through environment variables in production (see .env.example).
+# Defaults keep local development working.
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-only-insecure-key-change-me")
+DEBUG = os.environ.get("DJANGO_DEBUG", "True").lower() in ("1", "true", "yes")
+ALLOWED_HOSTS = [h.strip() for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "*").split(",") if h.strip()]
+
+# CORS for the Flutter web admin. Any origin while DEBUG, else an allow-list.
+CORS_ALLOW_ALL = os.environ.get("CORS_ALLOW_ALL", str(DEBUG)).lower() in ("1", "true", "yes")
+CORS_ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+
+# Approval behaviour
+# Shown on the "waiting for approval" screen as "Contact committee" (leave empty to hide).
+COMMITTEE_PHONE = os.environ.get("COMMITTEE_PHONE", "")
+HEAD_ADDED_MEMBERS_AUTO_APPROVE = os.environ.get("HEAD_ADDED_MEMBERS_AUTO_APPROVE", "False").lower() in ("1", "true", "yes")
+KEY_FIELD_REVIEW = os.environ.get("KEY_FIELD_REVIEW", "True").lower() in ("1", "true", "yes")
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(hours=12),  # example: 12-hour access token
@@ -152,6 +164,7 @@ REST_FRAMEWORK = {
 
 
 MIDDLEWARE = [
+    'suthar_backend.cors.SimpleCorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -195,9 +208,9 @@ DEFAULT_FILE_STORAGE = "django.core.files.storage.FileSystemStorage"
 
 #uncomment when want dynamic
 # CLOUDINARY_STORAGE = {
-#   'CLOUD_NAME': 'dwdvqvwsh',
-#   'API_KEY': '828578842676895',
-#   'API_SECRET': 'ecdVhBCjQ17dBJ6fD_hUpbKiuFM',
+#   'CLOUD_NAME': os.environ.get('CLOUDINARY_CLOUD_NAME'),
+#   'API_KEY': os.environ.get('CLOUDINARY_API_KEY'),
+#   'API_SECRET': os.environ.get('CLOUDINARY_API_SECRET'),
 # }
 
 AUTHENTICATION_BACKENDS = [

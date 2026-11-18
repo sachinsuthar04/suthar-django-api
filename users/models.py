@@ -55,6 +55,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     # ✅ NEW FIELD
     country_code = models.CharField(max_length=5, default="+91")
 
+    fcm_token = models.CharField(max_length=512, null=True, blank=True)
+
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, default="member")
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
